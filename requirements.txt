@@ -1,0 +1,5 @@
+Flask
+supabase
+akshare
+pandas
+gunicorn

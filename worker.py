@@ -57,7 +57,7 @@ def do_update_job():
     finally:
         print("--- Data update job finished ---")
 
-@app.route('/start-update', methods=['POST'])
+@app.route('/start-update', methods=['GET', 'POST'])
 def trigger_update():
     # 异步执行，立即返回，防止 Render 健康检查超时
     thread = threading.Thread(target=do_update_job)

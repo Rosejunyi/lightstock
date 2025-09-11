@@ -1,4 +1,4 @@
-# worker.py (最终 Web Service 版本)
+# worker.py (最终 Web Service + 异步执行版)
 import os
 from flask import Flask, jsonify
 from supabase import create_client, Client
@@ -9,12 +9,14 @@ import threading
 
 app = Flask(__name__)
 
+# --- 配置信息 ---
 SUPABASE_URL = "https://rqkdkpxdjbsxkstegjhq.supabase.co"
-SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY', "你的service_role密钥")
+# ----------------
 
 def do_update_job():
-    # ... (这个函数的内容和之前 Cron Job 版本完全一样) ...
-    print("--- Starting data update job (Render Web Service) ---")
+    """ 这是在后台线程中运行的、真正的耗时任务 """
+    print("--- Background data update job STARTED ---")
     try:
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         print("Successfully connected to Supabase.")
@@ -53,21 +55,24 @@ def do_update_job():
                 supabase.table('daily_bars').upsert(batch, on_conflict='symbol,date').execute()
             print("Upsert completed successfully.")
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"An error occurred in background job: {e}")
     finally:
-        print("--- Data update job finished ---")
+        print("--- Background data update job FINISHED ---")
 
 @app.route('/start-update', methods=['GET', 'POST'])
 def trigger_update():
-    # 异步执行，立即返回，防止 Render 健康检查超时
+    print("Received request to /start-update. Starting job in background thread.")
+    # 创建并启动一个后台线程来执行耗时任务
     thread = threading.Thread(target=do_update_job)
     thread.start()
-    return jsonify({"message": "Update job started."}), 202
+    # 立即返回响应，不等待后台任务完成
+    return jsonify({"message": "Update job successfully started in the background."}), 202
     
 @app.route('/')
 def health_check():
-    # 增加一个根路径，用于响应 Render 的健康检查
+    # 响应 Render 的健康检查
     return "OK", 200
 
 if __name__ == '__main__':
+    # 这一部分仅用于本地测试
     app.run(host='0.0.0.0', port=10000)

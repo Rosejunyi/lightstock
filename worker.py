@@ -1,17 +1,20 @@
-# worker.py (Cron Job 版本)
+# worker.py (最终 Web Service 版本)
 import os
+from flask import Flask, jsonify
 from supabase import create_client, Client
 import akshare as ak
+import pandas as pd
 from datetime import datetime
+import threading
 
-# --- 配置信息 ---
+app = Flask(__name__)
+
 SUPABASE_URL = "https://rqkdkpxdjbsxkstegjhq.supabase.co"
-SUPABASE_KEY = os.environ.get('SUPABASE_KEY', "你的service_role密钥")
-# ----------------
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 
 def do_update_job():
-    """ 这是真正执行数据更新的核心函数 """
-    print("--- Starting data update job (Render Cron Job) ---")
+    # ... (这个函数的内容和之前 Cron Job 版本完全一样) ...
+    print("--- Starting data update job (Render Web Service) ---")
     try:
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         print("Successfully connected to Supabase.")
@@ -19,8 +22,7 @@ def do_update_job():
         print("Fetching all stock data from AKShare...")
         stock_df = ak.stock_zh_a_spot_em()
         if stock_df is None or stock_df.empty:
-            print("Failed to fetch data from AKShare.")
-            return
+            print("Failed to fetch data from AKShare."); return
         print(f"Fetched {len(stock_df)} records from AKShare.")
         
         records_to_upsert = []
@@ -51,9 +53,21 @@ def do_update_job():
                 supabase.table('daily_bars').upsert(batch, on_conflict='symbol,date').execute()
             print("Upsert completed successfully.")
     except Exception as e:
-        print(f"An error occurred during the update job: {e}")
+        print(f"An error occurred: {e}")
     finally:
         print("--- Data update job finished ---")
 
+@app.route('/start-update', methods=['POST'])
+def trigger_update():
+    # 异步执行，立即返回，防止 Render 健康检查超时
+    thread = threading.Thread(target=do_update_job)
+    thread.start()
+    return jsonify({"message": "Update job started."}), 202
+    
+@app.route('/')
+def health_check():
+    # 增加一个根路径，用于响应 Render 的健康检查
+    return "OK", 200
+
 if __name__ == '__main__':
-    do_update_job() # 直接运行任务
+    app.run(host='0.0.0.0', port=10000)

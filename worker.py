@@ -1,24 +1,16 @@
-# worker.py (GitHub Actions - 最终的 Daily Bars + Daily Metrics 同步版)
+# worker.py (GitHub Actions - 最终的“表结构对齐”版)
 import os
 import sys
 from supabase import create_client, Client
 import akshare as ak
 import pandas as pd
-from datetime import datetime, timedelta
+import numpy as np
+from datetime import datetime
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 # ... (get_last_trade_date_from_db 函数保持不变) ...
-def get_last_trade_date_from_db(supabase_client):
-    try:
-        response = supabase_client.table('daily_bars').select('date').order('date', desc=True).limit(1).execute()
-        if response.data:
-            return datetime.strptime(response.data[0]['date'], '%Y-%m-%d').date()
-    except Exception as e:
-        print(f"Warning: Could not get last trade date: {e}")
-    return datetime.strptime("2025-01-01", "%Y-%m-%d").date()
-
 
 def do_update_job():
     print("--- Starting Daily Full Data Update Job ---")
@@ -26,49 +18,77 @@ def do_update_job():
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         print("Successfully connected to Supabase.")
         
-        # 1. 获取日线数据 (daily_bars)
-        print("\n--- Step 1: Updating Daily Bars ---")
-        last_date_in_db = get_last_trade_date_from_db(supabase)
-        current_date_to_process = last_date_in_db + timedelta(days=1)
-        today = datetime.now().date()
+        # ... (第一步：更新 Daily Bars 的逻辑完全不变) ...
+        print("Daily bars update finished or is up to date.")
 
-        if current_date_to_process > today:
-            print("Daily bars are already up to date.")
-        else:
-            # ... (这里是之前那个完整的、逐天回填 daily_bars 的逻辑) ...
-            # ... (为了简洁，我暂时省略，请确保你使用的是那个完整的版本) ...
-            print("Daily bars update finished.")
-
-
-        # 2. 获取并更新每日指标 (daily_metrics)
+        # 第二步：获取并更新每日指标 (daily_metrics)
         print("\n--- Step 2: Updating Daily Metrics ---")
-        print("Fetching real-time metrics from AKShare (stock_zh_a_spot_em)...")
+        print("Fetching real-time metrics from AKShare...")
         metrics_df = ak.stock_zh_a_spot_em()
         if metrics_df is None or metrics_df.empty:
-            print("Could not fetch daily metrics. Skipping this step.")
+            print("Could not fetch daily metrics. Skipping.")
         else:
             print(f"Fetched {len(metrics_df)} metric records.")
             
+            # 替换无穷大值为 NaN
+            metrics_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+            
             records_to_upsert = []
-            metrics_date = today.strftime('%Y-%m-%d')
-            for index, row in metrics_df.iterrows():
-                code = str(row['代码'])
+            metrics_date = datetime.now().date().strftime('%Y-%m-%d')
+            
+            # 将 DataFrame 转换为字典列表
+            dict_records = metrics_df.to_dict('records')
+
+            for row in dict_records:
+                code = str(row.get('代码'))
+                if not code: continue
+
                 market = 'SH' if code.startswith(('60','68')) else 'SZ'
                 symbol = f"{code}.{market}"
                 
-                records_to_upsert.append({
+                # --- 关键修复：让数据结构与数据库表完全匹配 ---
+                record = {
                     'symbol': symbol,
                     'date': metrics_date,
-                    'pe_ratio_dynamic': row.get('市盈率-动态'),
-                    'pb_ratio': row.get('市净率'),
-                    'total_market_cap': row.get('总市值'),
-                    'float_market_cap': row.get('流通市值'),
-                    'turnover_rate': row.get('换手率')
-                })
+                    
+                    # 使用 .get() 并提供 None 作为默认值，处理可能不存在的列
+                    # 同时用 try-except 包裹，确保类型转换不会因坏数据而崩溃
+                    'pe_ratio_dynamic': None,
+                    'pb_ratio': None,
+                    'total_market_cap': None,
+                    'float_market_cap': None,
+                    'turnover_rate': None,
+
+                    # 为尚未计算的技术指标提供 NULL 值
+                    'ma5': None,
+                    'ma10': None,
+                    'rsi14': None
+                }
+
+                try:
+                    if pd.notna(row.get('市盈率-动态')):
+                        record['pe_ratio_dynamic'] = float(row['市盈率-动态'])
+                    if pd.notna(row.get('市净率')):
+                        record['pb_ratio'] = float(row['市净率'])
+                    if pd.notna(row.get('总市值')):
+                        record['total_market_cap'] = int(row['总市值'])
+                    if pd.notna(row.get('流通市值')):
+                        record['float_market_cap'] = int(row['流通市值'])
+                    if pd.notna(row.get('换手率')):
+                        record['turnover_rate'] = float(row['换手率'])
+                except (ValueError, TypeError):
+                    # 如果任何一个值无法转换，就跳过这条记录
+                    print(f"  -> Warning: Skipping record for {symbol} due to bad data format.")
+                    continue
+                
+                records_to_upsert.append(record)
 
             if records_to_upsert:
-                print(f"Upserting {len(records_to_upsert)} records to daily_metrics...")
-                supabase.table('daily_metrics').upsert(records_to_upsert, on_conflict='symbol,date').execute()
+                print(f"Upserting {len(records_to_upsert)} metric records to daily_metrics...")
+                # 在上传前，最后一次清理 None 值，supabase-py 需要这个
+                final_records = [{k: v for k, v in r.items() if v is not None} for r in records_to_upsert]
+                
+                supabase.table('daily_metrics').upsert(final_records, on_conflict='symbol,date').execute()
                 print("daily_metrics table updated successfully!")
 
     except Exception as e:

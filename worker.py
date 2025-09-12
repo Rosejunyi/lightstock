@@ -1,4 +1,4 @@
-# worker.py (GitHub Actions - 最终数据类型修复版)
+# worker.py (GitHub Actions - 最终语法和类型修复版)
 import os
 import sys
 from supabase import create_client, Client
@@ -43,19 +43,32 @@ def do_update_job():
             elif code.startswith(('00', '30')): market = 'SZ'
             if not market: continue
             
-            # --- 关键修复：确保 amount 是整数 ---
             volume_val = int(row['成交量'])
-            amount_val = int(float(row['成交额'])) # 将浮点数的成交额直接转换为整数
+            amount_val = int(float(row['成交额']))
             
             records_to_upsert.append({
                 "symbol": f"{code}.{market}", "date": today,
                 "open": open_price, "high": float(row['最高']),
                 "low": float(row['最低']), "close": float(row['最新价']),
                 "volume": volume_val,
-                "amount": amount_val, # 使用转换后的整数值
+                "amount": amount_val,
             })
         
         print(f"Total valid records to upsert: {len(records_to_upsert)}")
         
         if records_to_upsert:
-            print("Upserting
+            # --- 关键修复：补上缺失的 ") ---
+            print("Upserting data to daily_bars table...")
+            batch_size = 500
+            for i in range(0, len(records_to_upsert), batch_size):
+                batch = records_to_upsert[i:i+batch_size]
+                supabase.table('daily_bars').upsert(batch, on_conflict='symbol,date').execute()
+            print("Upsert completed successfully.")
+    except Exception as e:
+        print(f"An error occurred in background job: {e}")
+        sys.exit(1)
+    finally:
+        print("--- Data update job FINISHED ---")
+
+if __name__ == '__main__':
+    do_update_job()

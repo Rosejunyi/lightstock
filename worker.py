@@ -9,6 +9,7 @@ import pandas as pd
 import pandas_ta as ta
 import numpy as np
 from datetime import datetime, timedelta
+from MyTT import * # <--- 新增的这一行！
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")

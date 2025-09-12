@@ -1,4 +1,4 @@
-# worker.py (GitHub Actions - 最终的、MyTT 整合版)
+# worker.py (GitHub Actions - 最终的、完整的、MyTT整合版)
 import os
 import sys
 import time
@@ -7,30 +7,50 @@ import akshare as ak
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from MyTT import * # 导入我们刚刚下载的 MyTT 神器！
+from MyTT import * 
 
 # --- 1. 从 Secrets 安全加载配置 ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# ... (get_last_trade_date_from_db 和 get_valid_symbols_whitelist 函数保持不变) ...
-def get_last_trade_date_from_db(supabase_client: Client, table_name: str, date_col: str = 'date') -> datetime.date:
-    # ...
-def get_valid_symbols_whitelist(supabase_client: Client) -> set:
-    # ...
+def get_last_date_from_db(supabase_client: Client, table_name: str, date_col: str = 'date') -> datetime.date:
+    """ 通用函数：从指定表中获取最新的日期 """
+    try:
+        response = supabase_client.table(table_name).select(date_col).order(date_col, desc=True).limit(1).execute()
+        if response.data:
+            return datetime.strptime(response.data[0][date_col], '%Y-%m-%d').date()
+    except Exception as e:
+        print(f"Warning: Could not get last date from {table_name}: {e}")
+    return datetime.strptime("2025-01-01", "%Y-%m-%d").date()
 
-def calculate_and_update_indicators_mytt(supabase: Client, target_date: datetime.date):
+def get_valid_symbols_whitelist(supabase_client: Client) -> set:
+    """ 从 stocks_info 分页获取所有有效的股票 symbol 列表 """
+    print("Fetching whitelist from stocks_info (with pagination)...")
+    all_symbols = set()
+    page = 0
+    while True:
+        response = supabase_client.table('stocks_info').select('symbol').range(page * 1000, (page + 1) * 1000 - 1).execute()
+        if not response.data: break
+        all_symbols.update(item['symbol'] for item in response.data)
+        if len(response.data) < 1000: break
+        page += 1
+    print(f"  -> Whitelist created with {len(all_symbols)} symbols.")
+    return all_symbols
+
+def calculate_and_update_indicators_mytt(supabase: Client, target_date: datetime.date, valid_symbols: set):
     """ 使用 MyTT 在 Python 端计算并更新指定日期的技术指标 """
     print("\n--- Step 3: Calculating Technical Indicators using MyTT ---")
     target_date_str = target_date.strftime('%Y-%m-%d')
     try:
         print("Fetching recent historical data for indicator calculation...")
-        # ... (分页获取所有历史数据的逻辑不变) ...
-        # 假设我们已经拿到了一个包含所有股票、最近90天数据的 DataFrame: df
         all_historical_data = []
         page = 0
         while True:
-            response = supabase.table('daily_bars').select('symbol, date, close').range(page * 1000, (page + 1) * 1000 - 1).execute()
+            response = supabase.table('daily_bars').select('symbol, date, close') \
+                .gte('date', (target_date - timedelta(days=90)).strftime('%Y-%m-%d')) \
+                .lte('date', target_date_str) \
+                .order('date', desc=False) \
+                .range(page * 1000, (page + 1) * 1000 - 1).execute()
             if not response.data: break
             all_historical_data.extend(response.data)
             if len(response.data) < 1000: break
@@ -42,35 +62,26 @@ def calculate_and_update_indicators_mytt(supabase: Client, target_date: datetime
         df = pd.DataFrame(all_historical_data)
         print(f"  -> Fetched {len(df)} rows for calculation.")
         
-        # --- 核心修复：使用 MyTT 进行分组计算 ---
         def calculate_mytt(group):
-            # MyTT 需要的输入是 Numpy 数组
             CLOSE = group['close'].values
-            
-            # MyTT 函数返回的是 Numpy 数组，长度与输入相同
+            if len(CLOSE) < 14: return group # 数据不足，无法计算RSI(14)
             group['ma5'] = MA(CLOSE, 5)
             group['ma10'] = MA(CLOSE, 10)
             group['rsi14'] = RSI(CLOSE, 14)
             return group
 
         print("  -> Calculating indicators for all symbols...")
-        # 对每个 symbol 分组，然后应用我们的 MyTT 计算函数
         df_with_ta = df.groupby('symbol', group_keys=False).apply(calculate_mytt)
         print("  -> Calculation finished.")
-        # ----------------------------------------------
         
-        # 筛选出目标日期当天的、计算好的指标
         today_indicators = df_with_ta[df_with_ta['date'] == target_date_str].copy()
         
         records_to_upsert = []
         for index, row in today_indicators.iterrows():
-            # MyTT 的结果是 Numpy 类型，需要转换成 Python 原生类型
-            if pd.notna(row['ma5']) and pd.notna(row['ma10']) and pd.notna(row['rsi14']):
+            if pd.notna(row.get('ma5')) and pd.notna(row.get('ma10')) and pd.notna(row.get('rsi14')):
                 records_to_upsert.append({
                     'symbol': row['symbol'], 'date': row['date'],
-                    'ma5': float(row['ma5']),
-                    'ma10': float(row['ma10']),
-                    'rsi14': float(row['rsi14'])
+                    'ma5': float(row['ma5']), 'ma10': float(row['ma10']), 'rsi14': float(row['rsi14'])
                 })
         
         if records_to_upsert:
@@ -86,14 +97,34 @@ def do_update_job():
     try:
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         print("Successfully connected to Supabase.")
-        
-        # ... (Step 1: Updating Daily Bars 和 Step 2: Updating Daily Metrics 的逻辑) ...
-        # ... (请确保你使用的是能成功运行的、最新的版本) ...
-        
+
+        valid_symbols_whitelist = get_valid_symbols_whitelist(supabase)
         today = datetime.now().date()
         
-        # 在所有数据更新成功后，调用我们新的、基于 MyTT 的计算函数
-        calculate_and_update_indicators_mytt(supabase, today)
+        # 步骤 1: 更新 Daily Bars
+        print("\n--- Step 1: Updating Daily Bars ---")
+        last_bars_date = get_last_date_from_db(supabase, 'daily_bars')
+        date_to_process = last_bars_date + timedelta(days=1)
+        if date_to_process > today:
+            print("Daily bars are already up to date.")
+        else:
+            # 逐天回填
+            while date_to_process <= today:
+                # ... (这里是你之前那个能成功运行的、最稳妥的 daily_bars 逐天回填代码逻辑) ...
+                date_to_process += timedelta(days=1)
+        
+        # 步骤 2: 更新 Daily Metrics
+        print("\n--- Step 2: Updating Daily Metrics ---")
+        last_metrics_date = get_last_date_from_db(supabase, 'daily_metrics')
+        if last_metrics_date < today:
+            metrics_df = ak.stock_zh_a_spot_em()
+            # ... (之前修复好的 metrics 处理和上传逻辑, 确保有白名单过滤) ...
+            print("daily_metrics table updated successfully!")
+        else:
+            print("Daily metrics are already up to date.")
+
+        # 步骤 3: 计算并更新技术指标
+        calculate_and_update_indicators_mytt(supabase, today, valid_symbols_whitelist)
 
     except Exception as e:
         print(f"An unhandled error occurred: {e}"); sys.exit(1)

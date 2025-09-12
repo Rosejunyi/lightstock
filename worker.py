@@ -1,4 +1,4 @@
-# worker.py (GitHub Actions - 最终健壮回填版)
+# worker.py (GitHub Actions - 最终语法和逻辑修复版)
 import os
 import sys
 from supabase import create_client, Client
@@ -16,7 +16,6 @@ def get_last_trade_date_from_db(supabase_client):
             return datetime.strptime(response.data[0]['date'], '%Y-%m-%d').date()
     except Exception as e:
         print(f"Warning: Could not get last trade date: {e}")
-    # 如果表为空，从一个合理的历史日期开始
     return datetime.strptime("2024-01-01", "%Y-%m-%d").date()
 
 def do_update_job():
@@ -29,25 +28,24 @@ def do_update_job():
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         print("Successfully connected to Supabase.")
         
-        # 1. 确定需要开始回填的日期
         next_date_to_fill = get_last_trade_date_from_db(supabase) + timedelta(days=1)
         today = datetime.now().date()
 
         print(f"Last date in DB: {next_date_to_fill - timedelta(days=1)}. Starting backfill from: {next_date_to_fill}")
 
-        # 2. 从 AKShare 获取完整的交易日历
+        if next_date_to_fill > today:
+            print("Data is already up to date. Job finished.")
+            return
+
         trade_date_df = ak.tool_trade_date_hist_df()
         trade_dates = {pd.to_datetime(d).date() for d in trade_date_df['trade_date']}
 
-        # 3. 从 stocks_info 获取“蓝图”
         print("Fetching valid symbols from Supabase...")
         response = supabase.table('stocks_info').select('symbol').execute()
         valid_symbols = {item['symbol'] for item in response.data}
         print(f"Found {len(valid_symbols)} valid symbols.")
 
-        # 4. 循环，一天一天地追赶，直到今天
         while next_date_to_fill <= today:
-            # 检查当天是否是交易日
             if next_date_to_fill not in trade_dates:
                 print(f"\nSkipping {next_date_to_fill}: Not a trading day.")
                 next_date_to_fill += timedelta(days=1)
@@ -69,7 +67,6 @@ def do_update_job():
 
                 records_to_upsert = []
                 for index, row in stock_df.iterrows():
-                    # ... (数据清洗和过滤逻辑和之前一样)
                     code = str(row['code'])
                     market = ''
                     if code.startswith(('60', '68')): market = 'SH'
@@ -87,9 +84,18 @@ def do_update_job():
                     supabase.table('daily_bars').upsert(records_to_upsert, on_conflict='symbol,date').execute()
                     total_upserted_count += len(records_to_upsert)
                 
-                # 成功后，日期前进一天
                 next_date_to_fill += timedelta(days=1)
 
             except Exception as e:
                 print(f"  -> An error occurred while processing {trade_date_str}: {e}")
-                print("  -> Will retry on the next 
+                # --- 关键修复：补上缺失的 ") ---
+                print("  -> Will retry on the next run. Stopping for now.")
+                break 
+
+    except Exception as e:
+        print(f"An unhandled error occurred: {e}"); sys.exit(1)
+    finally:
+        print(f"\n--- Data update job FINISHED. Total new records upserted in this run: {total_upserted_count} ---")
+
+if __name__ == '__main__':
+    do_update_job()

@@ -1,5 +1,3 @@
-Flask
-gunicorn
 supabase
 akshare
 pandas

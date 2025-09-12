@@ -1,34 +1,15 @@
-# .github/workflows/daily_update.yml
-
-name: Daily Stock Data Update
+name: Python Script Test
 
 on:
-  # 定时器：在 UTC 时间的每天 08:10 运行 (对应北京时间 16:10)
-  schedule:
-    - cron: '10 8 * * 1-5'
-  # 允许手动触发
   workflow_dispatch:
 
 jobs:
-  update-data:
-    runs-on: ubuntu-latest # 使用最新的 Ubuntu 虚拟机
+  test-script:
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11' # 指定 Python 版本
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run data update script
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      - name: Run simple python script
         run: python worker.py

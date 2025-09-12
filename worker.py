@@ -1,4 +1,4 @@
-# worker.py (GitHub Actions - 最终完美健壮回填版)
+# worker.py (GitHub Actions - 最终的“定点回填”版)
 import os
 import sys
 from supabase import create_client, Client
@@ -9,19 +9,16 @@ from datetime import datetime, timedelta
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-def get_last_trade_date_from_db(supabase_client):
-    """ 从 daily_bars 获取最新的一个交易日 """
-    try:
-        response = supabase_client.table('daily_bars').select('date').order('date', desc=True).limit(1).execute()
-        if response.data:
-            return datetime.strptime(response.data[0]['date'], '%Y-%m-%d').date()
-    except Exception as e:
-        print(f"Warning: Could not get last trade date: {e}")
-    return datetime.strptime("2024-01-01", "%Y-%m-%d").date()
+# --- 关键配置：我们在这里手动指定回填的范围 ---
+# 我们强制从 9月9日 开始
+BACKFILL_START_DATE = datetime(2025, 9, 9).date()
+# 回填到今天为止
+BACKFILL_END_DATE = datetime.now().date()
+# ------------------------------------------------
 
 def do_update_job():
     total_upserted_count = 0
-    print("--- Starting data update job (GitHub Actions - Robust Backfill) ---")
+    print("--- Starting data update job (GitHub Actions - Targeted Backfill) ---")
     try:
         if not SUPABASE_URL or not SUPABASE_KEY:
             print("Error: Secrets not available."); sys.exit(1)
@@ -29,41 +26,37 @@ def do_update_job():
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         print("Successfully connected to Supabase.")
         
-        last_date_in_db = get_last_trade_date_from_db(supabase)
-        next_date_to_fill = last_date_in_db + timedelta(days=1)
-        today = datetime.now().date()
-
-        print(f"Last date in DB is {last_date_in_db}. Starting backfill from {next_date_to_fill}.")
-
-        if next_date_to_fill > today:
-            print("Data is already up to date. Job finished.")
-            return
-
-        # --- 关键修复：使用最新的交易日历函数 ---
-        print("Fetching trading calendar from AKShare...")
-        trade_date_df = ak.tool_trade_date_hot_df()
-        trade_dates = {pd.to_datetime(d).date() for d in trade_date_df['datetime']}
-        
-        dates_to_fetch = [d for d in sorted(list(trade_dates)) if next_date_to_fill <= d <= today]
-        
-        if not dates_to_fetch:
-            print("No new trading days to fetch in the specified range. Job finished."); return
-        
-        print(f"Found {len(dates_to_fetch)} new trading day(s) to update: {', '.join([d.strftime('%Y-%m-%d') for d in dates_to_fetch])}")
-
+        # 1. 从 stocks_info 获取“蓝图”
         print("Fetching valid symbols from Supabase...")
         response = supabase.table('stocks_info').select('symbol').execute()
         valid_symbols = {item['symbol'] for item in response.data}
         print(f"Found {len(valid_symbols)} valid symbols to track.")
 
-        for trade_date in dates_to_fetch:
+        # 2. 生成我们需要处理的日期列表
+        dates_to_process = []
+        current_date = BACKFILL_START_DATE
+        while current_date <= BACKFILL_END_DATE:
+            dates_to_process.append(current_date)
+            current_date += timedelta(days=1)
+
+        if not dates_to_process:
+            print("No dates to process. Job finished.")
+            return
+
+        print(f"Targeting {len(dates_to_process)} days for backfill: from {BACKFILL_START_DATE} to {BACKFILL_END_DATE}")
+
+        # 3. 逐个交易日进行数据获取和上传
+        for trade_date in dates_to_process:
             trade_date_str = trade_date.strftime('%Y%m%d')
             print(f"\n--- Processing date: {trade_date_str} ---")
             
             try:
+                # 直接尝试获取当天数据
                 stock_df = ak.stock_zh_a_hist(symbol="all", period="daily", start_date=trade_date_str, end_date=trade_date_str, adjust="")
+                
                 if stock_df is None or stock_df.empty:
-                    print(f"  -> No data from AKShare for {trade_date_str}."); continue
+                    print(f"  -> No data from AKShare for {trade_date_str}. Skipping (Not a trading day).")
+                    continue
                 
                 print(f"  -> Fetched {len(stock_df)} records.")
                 stock_df.rename(columns={'股票代码': 'code', '日期': 'date', '开盘': 'open', '收盘': 'close', '最高': 'high', '最低': 'low', '成交量': 'volume', '成交额': 'amount'}, inplace=True)
@@ -85,14 +78,14 @@ def do_update_job():
                         })
                 
                 if records_to_upsert:
-                    print(f"  -> Upserting {len(records_to_upsert)} records...")
+                    print(f"  -> Upserting {len(records_to_upsert)} valid records for {trade_date_str}...")
                     supabase.table('daily_bars').upsert(records_to_upsert, on_conflict='symbol,date').execute()
                     total_upserted_count += len(records_to_upsert)
             
             except Exception as e:
                 print(f"  -> An error occurred while processing {trade_date_str}: {e}")
-                print("  -> Will retry this date on the next run. Stopping for now.")
-                break
+                # 即使某一天失败了，我们也继续尝试下一天
+                continue 
 
     except Exception as e:
         print(f"An unhandled error occurred in background job: {e}"); sys.exit(1)

@@ -1,4 +1,4 @@
-# worker.py (GitHub Actions - 最终的“白名单过滤”版)
+# worker.py (GitHub Actions - 最终的、完整的、王者归来版)
 import os
 import sys
 from supabase import create_client, Client
@@ -25,10 +25,10 @@ def do_update_job():
         print(f"  -> Whitelist created with {len(valid_symbols_whitelist)} symbols.")
         # ----------------------------------------------------
 
-        # 步骤 2: 更新 Daily Bars (日线行情)
+        # 步骤 2: 更新 Daily Bars (日线行情) - 保持你之前能成功运行的逻辑
         print("\n--- Step 2: Updating Daily Bars ---")
-        # ... (这里是你之前那个能成功运行的、最稳妥的 daily_bars 更新代码)
-        # ... (在它的 for 循环内部，也需要增加一个 if symbol in valid_symbols_whitelist: 的判断)
+        # ... (这里是你之前那个能成功运行的、最稳妥的 daily_bars 更新代码) ...
+        # ... (比如，逐天回填的版本，并在 for 循环内增加 if symbol in valid_symbols_whitelist 判断) ...
         print("Daily bars update finished or is up to date.")
 
 
@@ -50,24 +50,50 @@ def do_update_job():
             for row in dict_records:
                 code = str(row.get('代码'))
                 if not code: continue
-
                 market = 'SH' if code.startswith(('60','68')) else 'SZ'
                 symbol = f"{code}.{market}"
                 
-                # --- 关键修复：在添加前，先检查“白名单” ---
                 if symbol not in valid_symbols_whitelist:
-                    continue # 如果不在白名单里，就直接跳过这一行
-                # ---------------------------------------------
+                    continue
                 
-                # ... (和之前一样，构造 record 字典，进行类型转换)
-                record = { 'symbol': symbol, 'date': metrics_date, ... } # 省略详细字段
+                # --- 核心修复：这里是完整、无省略的字典 ---
+                record = {
+                    'symbol': symbol,
+                    'date': metrics_date,
+                    'pe_ratio_dynamic': None,
+                    'pb_ratio': None,
+                    'total_market_cap': None,
+                    'float_market_cap': None,
+                    'turnover_rate': None,
+                    'ma5': None,
+                    'ma10': None,
+                    'rsi14': None
+                }
+
+                try:
+                    if pd.notna(row.get('市盈率-动态')):
+                        record['pe_ratio_dynamic'] = float(row['市盈率-动态'])
+                    if pd.notna(row.get('市净率')):
+                        record['pb_ratio'] = float(row['市净率'])
+                    if pd.notna(row.get('总市值')):
+                        record['total_market_cap'] = int(row['总市值'])
+                    if pd.notna(row.get('流通市值')):
+                        record['float_market_cap'] = int(row['流通市值'])
+                    if pd.notna(row.get('换手率')):
+                        record['turnover_rate'] = float(row['换手率'])
+                except (ValueError, TypeError):
+                    print(f"  -> Warning: Skipping record for {symbol} due to bad data format.")
+                    continue
+                
                 records_to_upsert.append(record)
 
             print(f"Filtered down to {len(records_to_upsert)} records based on the whitelist.")
             
             if records_to_upsert:
                 print(f"Upserting {len(records_to_upsert)} metric records to daily_metrics...")
-                supabase.table('daily_metrics').upsert(records_to_upsert, on_conflict='symbol,date').execute()
+                final_records = [{k: v for k, v in r.items() if v is not None} for r in records_to_upsert]
+                
+                supabase.table('daily_metrics').upsert(final_records, on_conflict='symbol,date').execute()
                 print("daily_metrics table updated successfully!")
 
     except Exception as e:

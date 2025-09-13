@@ -1,0 +1,6 @@
+supabase
+akshare
+pandas
+numpy
+pandas-ta
+python-dotenv 

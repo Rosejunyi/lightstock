@@ -1,4 +1,4 @@
-# scripts/calculate_indicators.py (最终修复版 - 解决数据类型问题)
+# scripts/calculate_indicators.py (黄金最终版 - 彻底根除数据类型问题)
 import os
 import sys
 from supabase import create_client, Client
@@ -29,9 +29,12 @@ def main():
         latest_bar_response = supabase.table('daily_bars').select('date').order('date', desc=True).limit(1).execute()
         if not latest_bar_response.data:
             print("Error: No data in daily_bars table. Exiting."); sys.exit(1)
-        target_date = datetime.strptime(latest_bar_response.data[0]['date'], '%Y-%m-%d').date()
-        target_date_str = target_date.strftime('%Y-%m-%d')
+        
+        # ===> [终极加固] 我们将同时持有 date 对象和 string 对象 <===
+        target_date_str = latest_bar_response.data[0]['date']
+        target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
         print(f"  -> Target date for calculation is: {target_date_str}")
+
     except Exception as e:
         print(f"  -> Error fetching latest date: {e}. Exiting."); sys.exit(1)
 
@@ -52,29 +55,30 @@ def main():
             .order('date', desc=False) \
             .execute()
         
-        df_all = pd.DataFrame(response.data)
+        if not response.data:
+            print("  -> No data found for RS calculation period. Skipping RS part.")
+        else:
+            df_all = pd.DataFrame(response.data)
+            df_all['date'] = pd.to_datetime(df_all['date']).dt.date
         
-        # ===> [终极修复] 强制统一日期格式为标准字符串 <===
-        df_all['date'] = pd.to_datetime(df_all['date']).dt.strftime('%Y-%m-%d')
-        
-        def calculate_return(group):
-            if len(group) < STRATEGY_PERIOD: return None
-            start_price = group['close'].iloc[-STRATEGY_PERIOD]
-            end_price = group['close'].iloc[-1]
-            return (end_price / start_price - 1) if start_price != 0 else 0
+            def calculate_return(group):
+                if len(group) < STRATEGY_PERIOD: return None
+                start_price = group['close'].iloc[-STRATEGY_PERIOD]
+                end_price = group['close'].iloc[-1]
+                return (end_price / start_price - 1) if start_price != 0 else 0
 
-        returns = df_all.groupby('symbol').apply(calculate_return).dropna()
-        rs_ratings = returns.rank(pct=True) * 100
-        
-        rs_ratings_df = rs_ratings.reset_index()
-        rs_ratings_df = rs_ratings_df.rename(columns={0: 'rs_rating', 'symbol': 'symbol'})
-        
-        rs_ratings_df['date'] = target_date_str
-        print(f"  -> RS Ratings calculated for {len(rs_ratings_df)} stocks.")
-        
-        if not rs_ratings_df.empty:
-            supabase.table('daily_metrics').upsert(rs_ratings_df.to_dict('records'), on_conflict='symbol,date').execute()
-            print("  -> RS Ratings upserted successfully.")
+            returns = df_all.groupby('symbol').apply(calculate_return).dropna()
+            rs_ratings = returns.rank(pct=True) * 100
+            
+            rs_ratings_df = rs_ratings.reset_index()
+            rs_ratings_df = rs_ratings_df.rename(columns={0: 'rs_rating', 'symbol': 'symbol'})
+            
+            rs_ratings_df['date'] = target_date_str
+            print(f"  -> RS Ratings calculated for {len(rs_ratings_df)} stocks.")
+            
+            if not rs_ratings_df.empty:
+                supabase.table('daily_metrics').upsert(rs_ratings_df.to_dict('records'), on_conflict='symbol,date').execute()
+                print("  -> RS Ratings upserted successfully.")
 
         batch_size = 150 
         total_batches = (len(all_symbols) + batch_size - 1) // batch_size
@@ -85,7 +89,6 @@ def main():
             print(f"\n  --- Processing indicator batch {current_batch_num}/{total_batches} ---")
             
             start_date_batch = (target_date - timedelta(days=STRATEGY_PERIOD + 60)).strftime('%Y-%m-%d')
-            
             response = supabase.table('daily_bars') \
                 .select('symbol, date, open, high, low, close, volume') \
                 .in_('symbol', batch_symbols) \
@@ -100,12 +103,12 @@ def main():
             
             df_batch = pd.DataFrame(response.data)
             
-            # ===> [终极修复] 强制统一日期格式为标准字符串 <===
-            df_batch['date'] = pd.to_datetime(df_batch['date']).dt.strftime('%Y-%m-%d')
+            # ===> [终极修复 1/2] 将date列强制转换为最纯粹的 date 对象 <===
+            df_batch['date'] = pd.to_datetime(df_batch['date']).dt.date
             
             def calculate_all_indicators(group):
+                # ... (这个函数内部不变) ...
                 CLOSE = group['close']; HIGH = group['high']; LOW = group['low']; VOLUME = group['volume']
-                
                 group['ma10'] = MA(CLOSE, 10); group['ma20'] = MA(CLOSE, 20); group['ma50'] = MA(CLOSE, 50)
                 group['ma60'] = MA(CLOSE, 60); group['ma150'] = MA(CLOSE, 150)
                 group['high_52w'] = HIGH.rolling(window=STRATEGY_PERIOD, min_periods=1).max()
@@ -118,7 +121,9 @@ def main():
                 return group
 
             df_with_ta = df_batch.groupby('symbol', group_keys=False).apply(calculate_all_indicators)
-            today_indicators = df_with_ta[df_with_ta['date'] == target_date_str].copy()
+            
+            # ===> [终极修复 2/2] 使用最可靠的 date 对象进行比较 <===
+            today_indicators = df_with_ta[df_with_ta['date'] == target_date].copy()
             
             records_to_upsert = []
             indicator_columns = [
@@ -127,7 +132,8 @@ def main():
                 'macd_diff', 'macd_dea', 'rsi14'
             ]
             for index, row in today_indicators.iterrows():
-                record = {'symbol': row['symbol'], 'date': row['date']}
+                # 上传时，我们再把date对象变回字符串
+                record = {'symbol': row['symbol'], 'date': row['date'].strftime('%Y-%m-%d')}
                 for col in indicator_columns:
                     if col in row and pd.notna(row[col]):
                         record[col] = float(row[col])

@@ -1,0 +1,15 @@
+name: 1. Update Daily Bars
+on:
+  schedule:
+    - cron: '10 18 * * 1-5' # 每天凌晨 02:10 启动
+  workflow_dispatch:
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      # ... (checkout, setup-python, install-deps)
+      - name: Run update_bars.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python scripts/update_bars.py # 运行第一个脚本

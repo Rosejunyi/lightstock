@@ -1,20 +1,16 @@
 name: 3. Calculate Indicators
 
 on:
-  # 我们把原来的触发器全部注释掉
-  # workflow_run:
-  #   workflows: ["2. Update Daily Metrics"]
-  #   types:
-  #     - completed
-  workflow_dispatch:  # 确保这个还在，以防万一
-  push: # 新增一个 push 触发器
-    branches:
-      - main # 或者你当前工作的分支名
+  workflow_run:
+    workflows: ["2. Update Daily Metrics"]
+    types:
+      - completed
+  workflow_dispatch:
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
-   # if: github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3

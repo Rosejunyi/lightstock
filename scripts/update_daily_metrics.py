@@ -1,4 +1,4 @@
-# scripts/update_daily_metrics.py (最终的、完整的、带数据消毒功能版)
+# scripts/update_daily_metrics.py (最终的、语法和消毒功能修复版)
 import os, sys
 from supabase import create_client, Client
 import akshare as ak
@@ -39,13 +39,9 @@ def main():
 
     print(f"Fetched {len(metrics_df)} metric records.")
     
-    # --- 核心修复：执行彻底的数据消毒 ---
-    # 1. 替换无穷大值为 NaN
     metrics_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    # 2. 将所有 NaN 替换为 None，以便 JSON 序列化
     df_cleaned = metrics_df.where(pd.notna(metrics_df), None)
-    # ------------------------------------
-
+    
     records_to_upsert = []
     metrics_date = datetime.now().date().strftime('%Y-%m-%d')
     
@@ -67,11 +63,18 @@ def main():
             'turnover_rate': row.get('换手率')
         }
         try:
-            # 确保市值是整数
             if record['total_market_cap'] is not None: record['total_market_cap'] = int(record['total_market_cap'])
             if record['float_market_cap'] is not None: record['float_market_cap'] = int(record['float_market_cap'])
         except (ValueError, TypeError): continue
         records_to_upsert.append(record)
 
     if records_to_upsert:
-        print(f"Upserting {len(records_to_upsert)} valid metric records to daily_metrics.
+        # --- 关键修复：补上缺失的 " 和 ) ---
+        print(f"Upserting {len(records_to_upsert)} valid metric records to daily_metrics...")
+        supabase.table('daily_metrics').upsert(records_to_upsert, on_conflict='symbol,date').execute()
+        print("daily_metrics table updated successfully!")
+        
+    print("--- Job Finished: Update Daily Metrics ---")
+
+if __name__ == '__main__':
+    main()

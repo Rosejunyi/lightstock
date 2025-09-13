@@ -1,16 +1,26 @@
 name: 2. Update Daily Metrics
+
 on:
   workflow_run:
-    workflows: ["1. Update Daily Bars"] # 在“获取日线”成功后触发
-    types:
-      - completed
+    workflows: ["1. Update Daily Bars"]
+    types: [completed]
   workflow_dispatch:
+
 jobs:
   run-script:
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }} # 确保上一步是成功的
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
-      # ...
-      - name: Run update_metrics.py
-        env: #...
-        run: python scripts/update_metrics.py # 运行第二个脚本
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run update_daily_metrics.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python scripts/update_daily_metrics.py

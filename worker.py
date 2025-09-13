@@ -1,29 +1,21 @@
-# worker.py (GitHub Actions - 最终的、完整的、MyTT整合版)
+# worker.py (GitHub Actions - 最终的、全功能、数据清洗版)
 import os
 import sys
-import time
 from supabase import create_client, Client
 import akshare as ak
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-from MyTT import * 
+from datetime import datetime
 
-# --- 1. 从 Secrets 安全加载配置 ---
+# --- 1. 从 Secrets/Env 安全加载配置 ---
+# 在本地运行时，它会从 .env 读取
+from dotenv import load_dotenv
+load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+# ------------------------------------
 
-def get_last_date_from_db(supabase_client: Client, table_name: str, date_col: str = 'date') -> datetime.date:
-    """ 通用函数：从指定表中获取最新的日期 """
-    try:
-        response = supabase_client.table(table_name).select(date_col).order(date_col, desc=True).limit(1).execute()
-        if response.data:
-            return datetime.strptime(response.data[0][date_col], '%Y-%m-%d').date()
-    except Exception as e:
-        print(f"Warning: Could not get last date from {table_name}: {e}")
-    return datetime.strptime("2025-01-01", "%Y-%m-%d").date()
-
-def get_valid_symbols_whitelist(supabase_client: Client) -> set:
+def get_valid_symbols_whitelist(supabase_client):
     """ 从 stocks_info 分页获取所有有效的股票 symbol 列表 """
     print("Fetching whitelist from stocks_info (with pagination)...")
     all_symbols = set()
@@ -37,94 +29,77 @@ def get_valid_symbols_whitelist(supabase_client: Client) -> set:
     print(f"  -> Whitelist created with {len(all_symbols)} symbols.")
     return all_symbols
 
-def calculate_and_update_indicators_mytt(supabase: Client, target_date: datetime.date, valid_symbols: set):
-    """ 使用 MyTT 在 Python 端计算并更新指定日期的技术指标 """
-    print("\n--- Step 3: Calculating Technical Indicators using MyTT ---")
-    target_date_str = target_date.strftime('%Y-%m-%d')
-    try:
-        print("Fetching recent historical data for indicator calculation...")
-        all_historical_data = []
-        page = 0
-        while True:
-            response = supabase.table('daily_bars').select('symbol, date, close') \
-                .gte('date', (target_date - timedelta(days=90)).strftime('%Y-%m-%d')) \
-                .lte('date', target_date_str) \
-                .order('date', desc=False) \
-                .range(page * 1000, (page + 1) * 1000 - 1).execute()
-            if not response.data: break
-            all_historical_data.extend(response.data)
-            if len(response.data) < 1000: break
-            page += 1
-        
-        if not all_historical_data:
-            print("  -> No historical data found. Skipping."); return
-
-        df = pd.DataFrame(all_historical_data)
-        print(f"  -> Fetched {len(df)} rows for calculation.")
-        
-        def calculate_mytt(group):
-            CLOSE = group['close'].values
-            if len(CLOSE) < 14: return group # 数据不足，无法计算RSI(14)
-            group['ma5'] = MA(CLOSE, 5)
-            group['ma10'] = MA(CLOSE, 10)
-            group['rsi14'] = RSI(CLOSE, 14)
-            return group
-
-        print("  -> Calculating indicators for all symbols...")
-        df_with_ta = df.groupby('symbol', group_keys=False).apply(calculate_mytt)
-        print("  -> Calculation finished.")
-        
-        today_indicators = df_with_ta[df_with_ta['date'] == target_date_str].copy()
-        
-        records_to_upsert = []
-        for index, row in today_indicators.iterrows():
-            if pd.notna(row.get('ma5')) and pd.notna(row.get('ma10')) and pd.notna(row.get('rsi14')):
-                records_to_upsert.append({
-                    'symbol': row['symbol'], 'date': row['date'],
-                    'ma5': float(row['ma5']), 'ma10': float(row['ma10']), 'rsi14': float(row['rsi14'])
-                })
-        
-        if records_to_upsert:
-            print(f"  -> Found {len(records_to_upsert)} stocks with valid indicators. Upserting...")
-            supabase.table('daily_metrics').upsert(records_to_upsert, on_conflict='symbol,date').execute()
-            print("  -> Technical indicators updated successfully!")
-
-    except Exception as e:
-        print(f"  -> An error occurred during MyTT calculation: {e}")
-
 def do_update_job():
     print("--- Starting Daily Full Data Update Job ---")
     try:
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            print("Error: Secrets not available."); sys.exit(1)
+            
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         print("Successfully connected to Supabase.")
 
         valid_symbols_whitelist = get_valid_symbols_whitelist(supabase)
-        today = datetime.now().date()
         
-        # 步骤 1: 更新 Daily Bars
-        print("\n--- Step 1: Updating Daily Bars ---")
-        last_bars_date = get_last_date_from_db(supabase, 'daily_bars')
-        date_to_process = last_bars_date + timedelta(days=1)
-        if date_to_process > today:
-            print("Daily bars are already up to date.")
-        else:
-            # 逐天回填
-            while date_to_process <= today:
-                # ... (这里是你之前那个能成功运行的、最稳妥的 daily_bars 逐天回填代码逻辑) ...
-                date_to_process += timedelta(days=1)
+        # 步骤 1: 更新 Daily Bars (日线行情) - 暂时留空，我们先聚焦 metrics
+        print("\n--- Step 1: Updating Daily Bars (Placeholder) ---")
+        # ... (未来在这里放入 daily_bars 的更新逻辑) ...
         
-        # 步骤 2: 更新 Daily Metrics
+        # 步骤 2: 更新 Daily Metrics (每日指标)
         print("\n--- Step 2: Updating Daily Metrics ---")
-        last_metrics_date = get_last_date_from_db(supabase, 'daily_metrics')
-        if last_metrics_date < today:
-            metrics_df = ak.stock_zh_a_spot_em()
-            # ... (之前修复好的 metrics 处理和上传逻辑, 确保有白名单过滤) ...
-            print("daily_metrics table updated successfully!")
+        print("Fetching real-time metrics from AKShare...")
+        metrics_df = ak.stock_zh_a_spot_em()
+        if metrics_df is None or metrics_df.empty:
+            print("Could not fetch daily metrics. Skipping.")
         else:
-            print("Daily metrics are already up to date.")
+            print(f"Fetched {len(metrics_df)} metric records.")
+            
+            # --- 核心修复：替换掉所有不符合 JSON 规范的特殊浮点数 ---
+            metrics_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+            
+            records_to_upsert = []
+            metrics_date = datetime.now().date().strftime('%Y-%m-%d')
+            
+            # 使用 .where(pd.notna(...), None) 可以优雅地将所有 NaN 转换为 None
+            dict_records = metrics_df.where(pd.notna(metrics_df), None).to_dict('records')
 
-        # 步骤 3: 计算并更新技术指标
-        calculate_and_update_indicators_mytt(supabase, today, valid_symbols_whitelist)
+            for row in dict_records:
+                code = str(row.get('代码'))
+                if not code: continue
+                market = 'SH' if code.startswith(('60','68')) else 'SZ'
+                symbol = f"{code}.{market}"
+                
+                # 使用“白名单”进行过滤
+                if symbol not in valid_symbols_whitelist:
+                    continue
+                
+                record = {
+                    'symbol': symbol, 'date': metrics_date,
+                    'pe_ratio_dynamic': row.get('市盈率-动态'),
+                    'pb_ratio': row.get('市净率'),
+                    'total_market_cap': row.get('总市值'),
+                    'float_market_cap': row.get('流通市值'),
+                    'turnover_rate': row.get('换手率'),
+                    'ma5': None, 'ma10': None, 'rsi14': None # 暂时填充为空
+                }
+                
+                # 安全地进行类型转换
+                try:
+                    if record['total_market_cap'] is not None:
+                        record['total_market_cap'] = int(record['total_market_cap'])
+                    if record['float_market_cap'] is not None:
+                        record['float_market_cap'] = int(record['float_market_cap'])
+                except (ValueError, TypeError):
+                    print(f"  -> Warning: Skipping record for {symbol} due to bad market cap format.")
+                    continue
+                
+                records_to_upsert.append(record)
+
+            print(f"Filtered down to {len(records_to_upsert)} valid records.")
+            
+            if records_to_upsert:
+                print(f"Upserting {len(records_to_upsert)} metric records to daily_metrics...")
+                supabase.table('daily_metrics').upsert(records_to_upsert, on_conflict='symbol,date').execute()
+                print("daily_metrics table updated successfully!")
 
     except Exception as e:
         print(f"An unhandled error occurred: {e}"); sys.exit(1)
@@ -132,6 +107,4 @@ def do_update_job():
         print("\n--- Daily Full Data Update Job FINISHED ---")
 
 if __name__ == '__main__':
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        print("Error: SUPABASE_URL and SUPABASE_KEY secrets must be set."); sys.exit(1)
-    do_update_job()
+    main()

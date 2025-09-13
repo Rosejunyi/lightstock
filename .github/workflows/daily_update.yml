@@ -1,14 +1,8 @@
-# .github/workflows/daily_update.yml (最终自动化版)
+# .github/workflows/daily_update.yml (最终的、分步诊断版)
 
-name: Daily Stock Data Update
+name: Daily Stock Data Update - Diagnostic
 
 on:
-  # 1. 定时器：在 UTC 时间的每天 18:10 运行 (对应北京时间第二天凌晨 02:10)
-  #    只在周一到周五触发
-  schedule:
-    - cron: '10 18 * * 1-5'
-  
-  # 2. 手动触发器：保留这个，方便我们随时手动运行
   workflow_dispatch:
 
 jobs:
@@ -19,7 +13,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Set up Python 3.12
         uses: actions/setup-python@v4
         with:
           python-version: '3.12'
@@ -29,8 +23,33 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run data update script
-        # 从仓库的 Secrets 中读取环境变量
+      # ===================================================================
+      # 核心诊断步骤：我们在 Actions 里，一步一步地模拟 worker.py 的执行
+      # ===================================================================
+      - name: 1. Test Python and Imports
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          echo "--- Testing basic python execution ---"
+          python --version
+          echo "--- Testing imports ---"
+          python -c "import os, sys, time, pandas, numpy, pandas_ta, MyTT"
+          echo "Basic imports OK."
+          python -c "from supabase import create_client, Client"
+          echo "Supabase import OK."
+          # 我们把最可疑的 AKShare 单独测试
+          python -c "import akshare as ak"
+          echo "AKShare import OK."
+
+      - name: 2. Test AKShare data fetching
+        run: |
+          echo "--- Testing AKShare single stock fetch ---"
+          # 使用 -c 参数，直接在命令行运行一小段 Python 代码
+          python -c "import akshare as ak; print(ak.stock_zh_a_hist(symbol='000001', period='daily', start_date='20250912', end_date='20250912'))"
+
+      - name: 3. Run the full worker script
+        if: always() # 无论前面是否失败，都尝试运行一次主脚本
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}

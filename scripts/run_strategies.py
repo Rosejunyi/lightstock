@@ -1,4 +1,4 @@
-# scripts/run_strategies.py (修正版 - 以 daily_bars 为时间基准)
+# scripts/run_strategies.py (智能筛选版 - 采纳你的灵活策略)
 import os
 import sys
 from supabase import create_client, Client
@@ -18,54 +18,63 @@ def screen_strong_stocks(supabase: Client, target_date_str: str):
     print(f"\n--- Running Strategy: [Strong Stocks] for date: {target_date_str} ---")
     
     try:
-        # ... (内部逻辑完全不变) ...
+        # 1. 获取数据
         print("  -> Fetching daily_metrics data...")
         metrics_response = supabase.table('daily_metrics').select('*').eq('date', target_date_str).execute()
         if not metrics_response.data:
-            print("  -> No daily_metrics data found for the target date. Skipping.")
+            print("  -> No daily_metrics data found. Skipping.")
             return
         df_metrics = pd.DataFrame(metrics_response.data)
 
         print("  -> Fetching daily_bars data...")
         bars_response = supabase.table('daily_bars').select('symbol, date, close, volume, amount').eq('date', target_date_str).execute()
         if not bars_response.data:
-            print("  -> No daily_bars data found for the target date. Skipping.")
+            print("  -> No daily_bars data found. Skipping.")
             return
         df_bars = pd.DataFrame(bars_response.data)
 
         print("  -> Merging metrics and bars data...")
         df = pd.merge(df_metrics, df_bars, on=['symbol', 'date'])
         
-        # 过滤掉数据不完整的行
-        required_cols = ['ma50', 'ma150', 'ma10', 'ma20', 'low_52w', 'high_52w', 'rs_rating', 'total_market_cap', 'volume_ma10', 'volume_ma30', 'volume_ma60']
-        df.dropna(subset=required_cols, inplace=True)
-
         if df.empty:
-            print("  -> Data after merging and cleaning is empty. Skipping.")
+            print("  -> No data after merging. Skipping.")
             return
         
-        print(f"  -> Starting with {len(df)} stocks for screening.")
+        print(f"  -> Starting with a pool of {len(df)} stocks for screening.")
+
+        # ===> [核心修正] 我们不再粗暴地 dropna，而是让每个条件自我过滤 <===
+        # Pandas 的比较操作会自动处理 NaN 值（结果为 False），这正是我们需要的！
         
-        # ... (筛选条件逻辑完全不变) ...
-        cond1 = df['close'] > df['ma50']
-        cond2 = df['close'] > df['ma150']
-        cond4 = df['ma10'] > df['ma20']
-        cond5 = df['close'] >= df['low_52w'] * 1.3
-        cond6 = df['close'] >= df['high_52w'] * 0.8
-        cond7 = df['rs_rating'] >= 70
-        cond8 = df['close'] > 10
-        cond9 = df['total_market_cap'] > 3_000_000_000
-        cond10 = df['volume'] > 500_000
-        cond11 = df['amount'] > 100_000_000 
-        cond12 = (df['volume_ma10'] > 500_000) & (df['volume_ma30'] > 500_000) & (df['volume_ma60'] > 500_000)
+        # 2. 将13条标准翻译成 Pandas 筛选条件
+        # 为了安全，我们先创建一个全为 True 的“基础画布”
+        selection_mask = pd.Series(True, index=df.index)
+
+        print("  -> Applying screening conditions step-by-step...")
+
+        # 趋势指标
+        if 'ma50' in df.columns: selection_mask &= (df['close'] > df['ma50'])
+        if 'ma150' in df.columns: selection_mask &= (df['close'] > df['ma150'])
+        if 'ma10' in df.columns and 'ma20' in df.columns: selection_mask &= (df['ma10'] > df['ma20'])
         
-        print("  -> Applying all screening conditions...")
-        final_selection = df[
-            cond1 & cond2 & cond4 & cond5 & cond6 & cond7 & cond8 & cond9 & cond10 & cond11 & cond12
-        ]
+        # 价格强度与位置
+        if 'low_52w' in df.columns: selection_mask &= (df['close'] >= df['low_52w'] * 1.3)
+        if 'high_52w' in df.columns: selection_mask &= (df['close'] >= df['high_52w'] * 0.8)
+        if 'rs_rating' in df.columns: selection_mask &= (df['rs_rating'] >= 70)
+        selection_mask &= (df['close'] > 10)
+
+        # 流动性与规模
+        if 'total_market_cap' in df.columns: selection_mask &= (df['total_market_cap'] > 3_000_000_000)
+        if 'volume' in df.columns: selection_mask &= (df['volume'] > 500_000)
+        if 'amount' in df.columns: selection_mask &= (df['amount'] > 100_000_000)
+        if all(c in df.columns for c in ['volume_ma10', 'volume_ma30', 'volume_ma60']):
+            selection_mask &= (df['volume_ma10'] > 500_000) & (df['volume_ma30'] > 500_000) & (df['volume_ma60'] > 500_000)
+
+        # 3. 应用最终的筛选蒙版
+        final_selection = df[selection_mask]
         
         print(f"  -> Found {len(final_selection)} stocks that meet the criteria.")
 
+        # 4. 准备并上传结果
         if not final_selection.empty:
             records_to_upsert = []
             for index, row in final_selection.iterrows():
@@ -74,9 +83,9 @@ def screen_strong_stocks(supabase: Client, target_date_str: str):
                     'date': target_date_str,
                     'symbol': row['symbol'],
                     'data': {
-                        'close': row['close'],
-                        'rs_rating': row['rs_rating'],
-                        'market_cap': row['total_market_cap']
+                        'close': row.get('close'),
+                        'rs_rating': row.get('rs_rating'),
+                        'market_cap': row.get('total_market_cap')
                     }
                 })
             
@@ -96,7 +105,6 @@ def main():
         
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     
-    # ===> [核心修正] 我们以 daily_bars 中最新的日期作为我们唯一的、可靠的时间基准！ <===
     try:
         response = supabase.table('daily_bars').select('date').order('date', desc=True).limit(1).execute()
         if not response.data:
@@ -105,7 +113,6 @@ def main():
         
         print(f"  -> Setting strategy target date based on latest daily_bars: {target_date_str}")
         
-        # 运行我们所有的策略函数
         screen_strong_stocks(supabase, target_date_str)
         
     except Exception as e:

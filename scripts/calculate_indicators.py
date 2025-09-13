@@ -33,7 +33,7 @@ def main():
     try:
         # 我们假设你已经在 Supabase 创建了名为 calculate_simple_indicators 的函数
         # 并且 daily_metrics 表已经添加了所有需要的列
-        supabase.rpc('calculate_simple_indicators', {'target_date': today_str}).execute()
+        supabase.rpc('run_all_sql_calculations', {'target_date': today_str}).execute()
         print("  -> SQL calculations completed successfully in database.")
     except Exception as e:
         print(f"  -> Error during SQL calculation: {e}")

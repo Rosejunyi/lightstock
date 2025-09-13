@@ -1,4 +1,4 @@
-# scripts/calculate_indicators.py (The Grandmaster Edition - Built on the proven success pattern)
+# scripts/calculate_indicators.py (The Masterpiece Edition - Based on your proven success pattern)
 import os
 import sys
 from supabase import create_client, Client
@@ -15,8 +15,8 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 # --- 2. Core Strategy Parameters ---
 STRATEGY_PERIOD = 120 
-BATCH_SIZE = 100
-print(f"\n!!! RUNNING GRANDMASTER EDITION (Batch Size: {BATCH_SIZE}, Period: {STRATEGY_PERIOD}) !!!\n")
+BATCH_SIZE_UPSERT = 200 # 定义一个用于上传的安全批次大小
+print(f"\n!!! RUNNING THE MASTERPIECE EDITION (Period: {STRATEGY_PERIOD}) !!!\n")
 
 def main():
     print("--- Starting Job: [3/3] Calculate All Indicators ---")
@@ -36,101 +36,98 @@ def main():
     except Exception as e:
         print(f"  -> Error determining target date: {e}. Exiting."); sys.exit(1)
 
-    # --- Step 2: Prepare Symbol List ---
-    try:
-        response = supabase.table('stocks_info').select('symbol').execute()
-        all_symbols = [item['symbol'] for item in response.data]
-        print(f"  -> Found {len(all_symbols)} symbols for calculation.")
-    except Exception as e:
-        print(f"  -> Error fetching symbol list: {e}. Exiting."); sys.exit(1)
-
-    # --- Step 3: Process All Symbols in Batches ---
-    all_records_to_upsert = []
-    total_batches = (len(all_symbols) + BATCH_SIZE - 1) // BATCH_SIZE
-
-    for i in range(0, len(all_symbols), BATCH_SIZE):
-        batch_symbols = all_symbols[i:i+BATCH_SIZE]
-        current_batch_num = i//BATCH_SIZE + 1
-        print(f"\n--- Processing batch {current_batch_num}/{total_batches} ---")
+    # ===> [THE MASTERSTROKE] Adopting your successful paginated data fetching strategy <===
+    print("\n--- Step 2: Fetching all necessary historical data via pagination ---")
+    all_historical_data = []
+    page = 0
+    start_date_fetch = (target_date - timedelta(days=STRATEGY_PERIOD + 60)).strftime('%Y-%m-%d')
+    while True:
+        print(f"  -> Fetching page {page+1}...")
+        response = supabase.table('daily_bars') \
+            .select('symbol, date, open, high, low, close, volume') \
+            .gte('date', start_date_fetch) \
+            .lte('date', target_date_str) \
+            .order('date', desc=False) \
+            .range(page * 20000, (page + 1) * 20000 - 1).execute() # 使用更大的分页以提高效率
         
-        try:
-            # 1. Fetch data for the current batch
-            start_date_batch = (target_date - timedelta(days=STRATEGY_PERIOD + 60)).strftime('%Y-%m-%d')
-            response = supabase.table('daily_bars') \
-                .select('symbol, date, open, high, low, close, volume') \
-                .in_('symbol', batch_symbols) \
-                .gte('date', start_date_batch) \
-                .lte('date', target_date_str) \
-                .order('date', desc=False) \
-                .execute()
-            
-            if not response.data:
-                print("  -> No historical data found for this batch. Skipping.")
-                continue
-            
-            df_batch = pd.DataFrame(response.data)
-            df_batch['date'] = pd.to_datetime(df_batch['date']).dt.date
-            
-            # 2. Define the robust calculation function
-            def calculate_all_indicators(group):
-                if len(group) < 30: return None # Safety check: need at least 30 days
-                
-                CLOSE = group['close']; HIGH = group['high']; LOW = group['low']; VOLUME = group['volume']
-                
-                # Always calculate short-term indicators
-                group['ma10'] = MA(CLOSE, 10); group['ma20'] = MA(CLOSE, 20)
-                group['ma50'] = MA(CLOSE, 50); group['ma60'] = MA(CLOSE, 60)
-                group['volume_ma10'] = VOLUME.rolling(window=10).mean()
-                group['volume_ma30'] = VOLUME.rolling(window=30).mean()
-                group['volume_ma60'] = VOLUME.rolling(window=60).mean()
-                group['volume_ma90'] = VOLUME.rolling(window=90).mean()
-                DIF, DEA, _ = MACD(CLOSE.values); group['macd_diff'] = DIF; group['macd_dea'] = DEA
-                group['rsi14'] = RSI(CLOSE.values, 14)
-                
-                # Only calculate long-term indicators if data is sufficient
-                if len(group) >= STRATEGY_PERIOD:
-                    group['ma150'] = MA(CLOSE, 150)
-                    group['high_52w'] = HIGH.rolling(window=STRATEGY_PERIOD, min_periods=1).max()
-                    group['low_52w'] = LOW.rolling(window=STRATEGY_PERIOD, min_periods=1).min()
-                
-                return group
+        if not response.data: break
+        all_historical_data.extend(response.data)
+        # 假设如果返回的数据少于分页大小，就是最后一页
+        if len(response.data) < 20000: break
+        page += 1
 
-            # 3. Apply the calculation
-            df_with_ta = df_batch.groupby('symbol', group_keys=False).apply(calculate_all_indicators)
+    if not all_historical_data:
+        print("--- No historical data found for the required period. Job finished. ---")
+        return
+
+    df = pd.DataFrame(all_historical_data)
+    df['date'] = pd.to_datetime(df['date']).dt.date
+    print(f"  -> Successfully fetched a total of {len(df)} rows.")
+
+    # --- Step 3: Calculate all indicators in a single, robust operation ---
+    def calculate_all_indicators(group):
+        # 像成功代码一样，如果数据不足，返回原始组
+        if len(group) < 30: return group 
+        
+        CLOSE = group['close']; HIGH = group['high']; LOW = group['low']; VOLUME = group['volume']
+        
+        # 计算所有短期指标
+        group['ma10'] = MA(CLOSE, 10); group['ma20'] = MA(CLOSE, 20)
+        group['ma50'] = MA(CLOSE, 50); group['ma60'] = MA(CLOSE, 60)
+        group['volume_ma10'] = VOLUME.rolling(window=10).mean(); group['volume_ma30'] = VOLUME.rolling(window=30).mean()
+        group['volume_ma60'] = VOLUME.rolling(window=60).mean(); group['volume_ma90'] = VOLUME.rolling(window=90).mean()
+        DIF, DEA, _ = MACD(CLOSE.values); group['macd_diff'] = DIF; group['macd_dea'] = DEA
+        group['rsi14'] = RSI(CLOSE.values, 14)
+        
+        # 只有在数据足够时才计算长周期指标
+        if len(group) >= STRATEGY_PERIOD:
+            group['ma150'] = MA(CLOSE, 150)
+            group['high_52w'] = HIGH.rolling(window=STRATEGY_PERIOD, min_periods=1).max()
+            group['low_52w'] = LOW.rolling(window=STRATEGY_PERIOD, min_periods=1).min()
             
-            # ===> [THE GRANDMASTER FIX] This is the correct, robust way to handle failed calculations <===
-            if df_with_ta.empty:
-                print("  -> No stocks in this batch had enough data to pass the initial check. Skipping.")
-                continue
+            # 计算RS评分 (相对强度)
+            start_price = group['close'].iloc[-STRATEGY_PERIOD]
+            end_price = group['close'].iloc[-1]
+            group['rs_raw'] = (end_price / start_price - 1) if start_price != 0 else 0
+        
+        return group
 
-            # 4. Filter for the target date
-            today_indicators = df_with_ta[df_with_ta['date'] == target_date].copy()
+    print("\n--- Applying calculations to the entire dataset... ---")
+    df_with_ta = df.groupby('symbol', group_keys=False).apply(calculate_all_indicators)
+    print("  -> All calculations applied.")
 
-            if today_indicators.empty:
-                print(f"  -> Data for target date {target_date_str} not found in this batch's results. Skipping.")
-                continue
-            
-            # 5. Prepare records for this batch
-            indicator_columns = ['ma10', 'ma20', 'ma50', 'ma60', 'ma150', 'high_52w', 'low_52w', 'volume_ma10', 'volume_ma30', 'volume_ma60', 'volume_ma90', 'macd_diff', 'macd_dea', 'rsi14']
-            for index, row in today_indicators.iterrows():
-                record = {'symbol': row['symbol'], 'date': row['date'].strftime('%Y-%m-%d')}
-                for col in indicator_columns:
-                    if col in row and pd.notna(row[col]):
-                        record[col] = float(row[col])
-                if len(record) > 2:
-                    all_records_to_upsert.append(record)
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"  -> An unhandled error occurred in batch {current_batch_num}. Skipping.")
+    # --- Step 4: Filter, Rank, and Prepare for Upsert ---
+    print("\n--- Filtering results for the target date... ---")
+    today_indicators = df_with_ta[df_with_ta['date'] == target_date].copy()
     
-    # --- Step 4: Final Upsert ---
-    if all_records_to_upsert:
-        print(f"\n--- Upserting a total of {len(all_records_to_upsert)} calculated records ---")
-        for i in range(0, len(all_records_to_upsert), BATCH_SIZE):
-            upload_batch = all_records_to_upsert[i:i+BATCH_SIZE]
-            print(f"    -> Upserting chunk {i//BATCH_SIZE + 1} ({len(upload_batch)} records)...")
+    # 计算最终的RS评分 (0-100的百分位排名)
+    if 'rs_raw' in today_indicators.columns:
+        today_indicators['rs_rating'] = today_indicators['rs_raw'].rank(pct=True) * 100
+        print("  -> RS Ratings calculated.")
+
+    if today_indicators.empty:
+        print("--- No indicators to update for the target date. Job finished. ---")
+        return
+
+    print(f"  -> Found {len(today_indicators)} stocks with data for the target date.")
+    
+    records_to_upsert = []
+    indicator_columns = ['ma10', 'ma20', 'ma50', 'ma60', 'ma150', 'high_52w', 'low_52w', 'volume_ma10', 'volume_ma30', 'volume_ma60', 'volume_ma90', 'macd_diff', 'macd_dea', 'rsi14', 'rs_rating']
+    for index, row in today_indicators.iterrows():
+        record = {'symbol': row['symbol'], 'date': row['date'].strftime('%Y-%m-%d')}
+        for col in indicator_columns:
+            # 使用更安全的 .get() 方法
+            if pd.notna(row.get(col)):
+                record[col] = float(row.get(col))
+        if len(record) > 2:
+            records_to_upsert.append(record)
+
+    # --- Step 5: Final Upsert ---
+    if records_to_upsert:
+        print(f"\n--- Upserting a total of {len(records_to_upsert)} calculated records ---")
+        for i in range(0, len(records_to_upsert), BATCH_SIZE_UPSERT):
+            upload_batch = records_to_upsert[i:i+BATCH_SIZE_UPSERT]
+            print(f"    -> Upserting chunk {i//BATCH_SIZE_UPSERT + 1} ({len(upload_batch)} records)...")
             supabase.table('daily_metrics').upsert(upload_batch, on_conflict='symbol,date').execute()
         print("  -> All indicators updated successfully!")
     else:

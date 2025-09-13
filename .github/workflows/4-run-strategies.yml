@@ -1,0 +1,30 @@
+name: 4. Run Strategies
+
+on:
+  workflow_run:
+    workflows: ["3. Calculate Indicators"] # 依赖于上一个工作流
+    types:
+      - completed
+  workflow_dispatch: # 同样允许手动触发
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run run_strategies.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python scripts/run_strategies.py

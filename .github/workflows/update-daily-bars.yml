@@ -1,15 +1,24 @@
 name: 1. Update Daily Bars
+
 on:
   schedule:
-    - cron: '10 18 * * 1-5' # 每天凌晨 02:10 启动
+    - cron: '10 18 * * 1-5'
   workflow_dispatch:
+
 jobs:
   run-script:
     runs-on: ubuntu-latest
     steps:
-      # ... (checkout, setup-python, install-deps)
-      - name: Run update_bars.py
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run update_daily_bars.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: python scripts/update_bars.py # 运行第一个脚本
+        run: python scripts/update_daily_bars.py

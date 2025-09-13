@@ -1,4 +1,4 @@
-# scripts/update_daily_metrics.py
+# scripts/update_daily_metrics.py (最终的、完整的、带数据消毒功能版)
 import os, sys
 from supabase import create_client, Client
 import akshare as ak
@@ -11,7 +11,8 @@ load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-def get_valid_symbols_whitelist(supabase_client: Client):
+def get_valid_symbols_whitelist(supabase_client: Client) -> set:
+    print("Fetching whitelist from stocks_info...")
     all_symbols = set()
     page = 0
     while True:
@@ -20,12 +21,13 @@ def get_valid_symbols_whitelist(supabase_client: Client):
         all_symbols.update(item['symbol'] for item in response.data)
         if len(response.data) < 1000: break
         page += 1
+    print(f"  -> Whitelist created with {len(all_symbols)} symbols.")
     return all_symbols
     
 def main():
     print("--- Starting Job: [2/3] Update Daily Metrics ---")
     if not SUPABASE_URL or not SUPABASE_KEY:
-        print("Error: Supabase credentials not found in environment."); sys.exit(1)
+        print("Error: Supabase credentials not found."); sys.exit(1)
         
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     valid_symbols_whitelist = get_valid_symbols_whitelist(supabase)
@@ -33,17 +35,21 @@ def main():
     print("Fetching real-time metrics from AKShare...")
     metrics_df = ak.stock_zh_a_spot_em()
     if metrics_df is None or metrics_df.empty:
-        print("Could not fetch daily metrics. Job finished.")
-        return
+        print("Could not fetch daily metrics. Job finished."); return
 
     print(f"Fetched {len(metrics_df)} metric records.")
-    metrics_df.replace([np.inf, -np.inf], np.nan, inplace=True)
     
+    # --- 核心修复：执行彻底的数据消毒 ---
+    # 1. 替换无穷大值为 NaN
+    metrics_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    # 2. 将所有 NaN 替换为 None，以便 JSON 序列化
+    df_cleaned = metrics_df.where(pd.notna(metrics_df), None)
+    # ------------------------------------
+
     records_to_upsert = []
     metrics_date = datetime.now().date().strftime('%Y-%m-%d')
-    dict_records = metrics_df.where(pd.notna(metrics_df), None).to_dict('records')
-
-    for row in dict_records:
+    
+    for row in df_cleaned.to_dict('records'):
         code = str(row.get('代码'))
         if not code: continue
         market = 'SH' if code.startswith(('60','68')) else 'SZ'
@@ -61,17 +67,11 @@ def main():
             'turnover_rate': row.get('换手率')
         }
         try:
+            # 确保市值是整数
             if record['total_market_cap'] is not None: record['total_market_cap'] = int(record['total_market_cap'])
             if record['float_market_cap'] is not None: record['float_market_cap'] = int(record['float_market_cap'])
         except (ValueError, TypeError): continue
         records_to_upsert.append(record)
 
     if records_to_upsert:
-        print(f"Upserting {len(records_to_upsert)} metric records to daily_metrics...")
-        supabase.table('daily_metrics').upsert(records_to_upsert, on_conflict='symbol,date').execute()
-        print("daily_metrics table updated successfully!")
-        
-    print("--- Job Finished: Update Daily Metrics ---")
-
-if __name__ == '__main__':
-    main()
+        print(f"Upserting {len(records_to_upsert)} valid metric records to daily_metrics.

@@ -70,7 +70,8 @@ def main():
         # 计算 RS 评分 (百分位排名)
         # 将回报率从低到高排名，然后转换为 0-100 的分数
         rs_ratings = returns.rank(pct=True) * 100
-        rs_ratings_df = rs_ratings.reset_index(name='rs_rating')
+       rs_ratings_df = rs_ratings.reset_index()
+       rs_ratings_df = rs_ratings_df.rename(columns={0: 'rs_rating'})
         rs_ratings_df['date'] = target_date_str
         print(f"  -> RS Ratings calculated for {len(rs_ratings_df)} stocks.")
         

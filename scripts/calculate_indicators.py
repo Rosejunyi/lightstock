@@ -1,4 +1,4 @@
-# scripts/calculate_indicators.py (The Masterpiece Edition - Based on your proven success pattern)
+# scripts/calculate_indicators.py (王者归来版 - 严格遵循 work.py 成功模式)
 import os
 import sys
 from supabase import create_client, Client
@@ -8,15 +8,17 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from MyTT import *
 
-# --- 1. Configuration ---
+# --- 1. 配置加载 ---
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# --- 2. Core Strategy Parameters ---
+# --- 2. 核心策略参数 ---
 STRATEGY_PERIOD = 120 
-BATCH_SIZE_UPSERT = 200 # 定义一个用于上传的安全批次大小
-print(f"\n!!! RUNNING THE MASTERPIECE EDITION (Period: {STRATEGY_PERIOD}) !!!\n")
+# ===> 采纳 work.py 的核心秘诀：分页大小 <===
+PAGINATION_SIZE = 1000 
+UPSERT_BATCH_SIZE = 200 # 用于上传的分批大小
+print(f"\n!!! RUNNING THE KING'S RETURN EDITION (Pagination: {PAGINATION_SIZE}) !!!\n")
 
 def main():
     print("--- Starting Job: [3/3] Calculate All Indicators ---")
@@ -25,7 +27,7 @@ def main():
         
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     
-    # --- Step 1: Determine Target Date ---
+    # --- 步骤 1: 确定目标日期 ---
     try:
         latest_bar_response = supabase.table('daily_bars').select('date').order('date', desc=True).limit(1).execute()
         if not latest_bar_response.data:
@@ -36,37 +38,37 @@ def main():
     except Exception as e:
         print(f"  -> Error determining target date: {e}. Exiting."); sys.exit(1)
 
-    # ===> [THE MASTERSTROKE] Adopting your successful paginated data fetching strategy <===
-    print("\n--- Step 2: Fetching all necessary historical data via pagination ---")
+    # ===> [核心重构] 完全采纳 work.py 的“无差别”分页下载模式 <===
+    print("\n--- 步骤 2: 通过分页获取全部所需历史数据 ---")
     all_historical_data = []
     page = 0
     start_date_fetch = (target_date - timedelta(days=STRATEGY_PERIOD + 60)).strftime('%Y-%m-%d')
     while True:
-        print(f"  -> Fetching page {page+1}...")
+        print(f"  -> 正在获取第 {page+1} 页数据...")
+        # 我们不再筛选 symbol，而是获取时间范围内的所有数据
         response = supabase.table('daily_bars') \
             .select('symbol, date, open, high, low, close, volume') \
             .gte('date', start_date_fetch) \
             .lte('date', target_date_str) \
             .order('date', desc=False) \
-            .range(page * 20000, (page + 1) * 20000 - 1).execute() # 使用更大的分页以提高效率
+            .range(page * PAGINATION_SIZE, (page + 1) * PAGINATION_SIZE - 1).execute()
         
         if not response.data: break
         all_historical_data.extend(response.data)
-        # 假设如果返回的数据少于分页大小，就是最后一页
-        if len(response.data) < 20000: break
+        if len(response.data) < PAGINATION_SIZE: break
         page += 1
 
     if not all_historical_data:
-        print("--- No historical data found for the required period. Job finished. ---")
+        print("--- 在所需时间范围内未找到任何历史数据。任务结束。 ---")
         return
 
     df = pd.DataFrame(all_historical_data)
     df['date'] = pd.to_datetime(df['date']).dt.date
-    print(f"  -> Successfully fetched a total of {len(df)} rows.")
+    print(f"  -> 成功获取了总计 {len(df)} 行数据。")
 
-    # --- Step 3: Calculate all indicators in a single, robust operation ---
+    # --- 步骤 3: 在一个强大的操作中计算所有指标 ---
     def calculate_all_indicators(group):
-        # 像成功代码一样，如果数据不足，返回原始组
+        # 采纳 work.py 的稳健模式：数据不足则返回原始组
         if len(group) < 30: return group 
         
         CLOSE = group['close']; HIGH = group['high']; LOW = group['low']; VOLUME = group['volume']
@@ -85,55 +87,57 @@ def main():
             group['high_52w'] = HIGH.rolling(window=STRATEGY_PERIOD, min_periods=1).max()
             group['low_52w'] = LOW.rolling(window=STRATEGY_PERIOD, min_periods=1).min()
             
-            # 计算RS评分 (相对强度)
+            # RS评分的原始值计算被无缝整合进来
             start_price = group['close'].iloc[-STRATEGY_PERIOD]
             end_price = group['close'].iloc[-1]
             group['rs_raw'] = (end_price / start_price - 1) if start_price != 0 else 0
         
         return group
 
-    print("\n--- Applying calculations to the entire dataset... ---")
+    print("\n--- 正在对整个数据集应用计算... ---")
     df_with_ta = df.groupby('symbol', group_keys=False).apply(calculate_all_indicators)
-    print("  -> All calculations applied.")
+    print("  -> 所有计算已应用。")
 
-    # --- Step 4: Filter, Rank, and Prepare for Upsert ---
-    print("\n--- Filtering results for the target date... ---")
+    # --- 步骤 4: 筛选、排名并准备上传 ---
+    print("\n--- 正在筛选目标日期的结果... ---")
     today_indicators = df_with_ta[df_with_ta['date'] == target_date].copy()
     
     # 计算最终的RS评分 (0-100的百分位排名)
     if 'rs_raw' in today_indicators.columns:
-        today_indicators['rs_rating'] = today_indicators['rs_raw'].rank(pct=True) * 100
-        print("  -> RS Ratings calculated.")
+        # 过滤掉无法计算RS的行（NaN值）
+        valid_rs = today_indicators.dropna(subset=['rs_raw'])
+        today_indicators['rs_rating'] = valid_rs['rs_raw'].rank(pct=True) * 100
+        print("  -> RS评分已计算。")
 
     if today_indicators.empty:
-        print("--- No indicators to update for the target date. Job finished. ---")
+        print("--- 目标日期没有任何指标需要更新。任务结束。 ---")
         return
 
-    print(f"  -> Found {len(today_indicators)} stocks with data for the target date.")
+    print(f"  -> 找到 {len(today_indicators)} 只股票在目标日期有数据。")
     
     records_to_upsert = []
     indicator_columns = ['ma10', 'ma20', 'ma50', 'ma60', 'ma150', 'high_52w', 'low_52w', 'volume_ma10', 'volume_ma30', 'volume_ma60', 'volume_ma90', 'macd_diff', 'macd_dea', 'rsi14', 'rs_rating']
     for index, row in today_indicators.iterrows():
         record = {'symbol': row['symbol'], 'date': row['date'].strftime('%Y-%m-%d')}
         for col in indicator_columns:
-            # 使用更安全的 .get() 方法
+            # 采纳 work.py 的安全模式 .get()
             if pd.notna(row.get(col)):
                 record[col] = float(row.get(col))
-        if len(record) > 2:
+        if len(record) > 2: # 确保至少有一个有效指标
             records_to_upsert.append(record)
 
-    # --- Step 5: Final Upsert ---
+    # --- 步骤 5: 最终上传 ---
     if records_to_upsert:
-        print(f"\n--- Upserting a total of {len(records_to_upsert)} calculated records ---")
-        for i in range(0, len(records_to_upsert), BATCH_SIZE_UPSERT):
-            upload_batch = records_to_upsert[i:i+BATCH_SIZE_UPSERT]
-            print(f"    -> Upserting chunk {i//BATCH_SIZE_UPSERT + 1} ({len(upload_batch)} records)...")
+        print(f"\n--- 准备上传总计 {len(records_to_upsert)} 条计算记录 ---")
+        for i in range(0, len(records_to_upsert), UPSERT_BATCH_SIZE):
+            upload_batch = records_to_upsert[i:i+UPSERT_BATCH_SIZE]
+            print(f"    -> 正在上传块 {i//UPSERT_BATCH_SIZE + 1} ({len(upload_batch)} 条记录)...")
             supabase.table('daily_metrics').upsert(upload_batch, on_conflict='symbol,date').execute()
-        print("  -> All indicators updated successfully!")
+        print("  -> 所有指标已成功更新！")
     else:
-        print("\n--- No new indicators were calculated to be upserted. ---")
+        print("\n--- 没有计算出新的指标需要上传。 ---")
         
-    print("\n--- Job Finished ---")
+    print("\n--- 任务圆满完成 ---")
 
 if __name__ == '__main__':
     main()

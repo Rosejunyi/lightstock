@@ -1,4 +1,4 @@
-# scripts/update_daily_metrics.py (最终的、语法和消毒功能修复版)
+# scripts/update_daily_metrics.py (最终的、强制 NaN 替换版)
 import os, sys
 from supabase import create_client, Client
 import akshare as ak
@@ -39,9 +39,13 @@ def main():
 
     print(f"Fetched {len(metrics_df)} metric records.")
     
+    # --- 核心修复：执行更强制、更彻底的数据消毒 ---
+    # 1. 替换无穷大值为 NaN
     metrics_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df_cleaned = metrics_df.where(pd.notna(metrics_df), None)
-    
+    # 2. 强制将所有 NaN 替换为 None
+    df_cleaned = metrics_df.astype(object).where(pd.notna(metrics_df), None)
+    # ---------------------------------------------
+
     records_to_upsert = []
     metrics_date = datetime.now().date().strftime('%Y-%m-%d')
     
@@ -69,9 +73,8 @@ def main():
         records_to_upsert.append(record)
 
     if records_to_upsert:
-        # --- 关键修复：补上缺失的 " 和 ) ---
         print(f"Upserting {len(records_to_upsert)} valid metric records to daily_metrics...")
-        supabase.table('daily_metrics').upsert(records_to_upsert, on_conflict='symbol,date').execute()
+        supabase.table('daily_metrics').upsert(records_to_upsert).execute()
         print("daily_metrics table updated successfully!")
         
     print("--- Job Finished: Update Daily Metrics ---")

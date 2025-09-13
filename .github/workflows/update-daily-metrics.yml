@@ -1,30 +1,77 @@
-name: 2. Update Daily Metrics
+# scripts/update_daily_metrics.py (最终的、完整的、带数据消毒功能版)
+import os, sys
+from supabase import create_client, Client
+import akshare as ak
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from dotenv import load_dotenv
 
-on:
-  workflow_run:
-    workflows: ["1. Update Daily Bars"]
-    types:
-      - completed
-  workflow_dispatch:
+load_dotenv()
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-jobs:
-  run-script:
-    runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+def get_valid_symbols_whitelist(supabase_client: Client) -> set:
+    print("Fetching whitelist from stocks_info...")
+    all_symbols = set()
+    page = 0
+    while True:
+        response = supabase_client.table('stocks_info').select('symbol').range(page * 1000, (page + 1) * 1000 - 1).execute()
+        if not response.data: break
+        all_symbols.update(item['symbol'] for item in response.data)
+        if len(response.data) < 1000: break
+        page += 1
+    print(f"  -> Whitelist created with {len(all_symbols)} symbols.")
+    return all_symbols
+    
+def main():
+    print("--- Starting Job: [2/3] Update Daily Metrics ---")
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("Error: Supabase credentials not found."); sys.exit(1)
         
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.12'
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    valid_symbols_whitelist = get_valid_symbols_whitelist(supabase)
+    
+    print("Fetching real-time metrics from AKShare...")
+    metrics_df = ak.stock_zh_a_spot_em()
+    if metrics_df is None or metrics_df.empty:
+        print("Could not fetch daily metrics. Job finished."); return
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+    print(f"Fetched {len(metrics_df)} metric records.")
+    
+    # --- 核心修复：执行彻底的数据消毒 ---
+    # 1. 替换无穷大值为 NaN
+    metrics_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    # 2. 将所有 NaN 替换为 None，以便 JSON 序列化
+    df_cleaned = metrics_df.where(pd.notna(metrics_df), None)
+    # ------------------------------------
 
-      - name: Run update_daily_metrics.py
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: python scripts/update_daily_metrics.py
+    records_to_upsert = []
+    metrics_date = datetime.now().date().strftime('%Y-%m-%d')
+    
+    for row in df_cleaned.to_dict('records'):
+        code = str(row.get('代码'))
+        if not code: continue
+        market = 'SH' if code.startswith(('60','68')) else 'SZ'
+        symbol = f"{code}.{market}"
+        
+        if symbol not in valid_symbols_whitelist:
+            continue
+        
+        record = {
+            'symbol': symbol, 'date': metrics_date,
+            'pe_ratio_dynamic': row.get('市盈率-动态'),
+            'pb_ratio': row.get('市净率'),
+            'total_market_cap': row.get('总市值'),
+            'float_market_cap': row.get('流通市值'),
+            'turnover_rate': row.get('换手率')
+        }
+        try:
+            # 确保市值是整数
+            if record['total_market_cap'] is not None: record['total_market_cap'] = int(record['total_market_cap'])
+            if record['float_market_cap'] is not None: record['float_market_cap'] = int(record['float_market_cap'])
+        except (ValueError, TypeError): continue
+        records_to_upsert.append(record)
+
+    if records_to_upsert:
+        print(f"Upserting {len(records_to_upsert)} valid metric records to daily_metrics.

@@ -1,4 +1,4 @@
-# scripts/calculate_indicators.py (策略调整版 - 适应有限历史数据)
+# scripts/calculate_indicators.py (Final Corrected Version)
 import os
 import sys
 from supabase import create_client, Client
@@ -47,7 +47,6 @@ def main():
         print(f"  -> Found {len(all_symbols)} symbols for calculation.")
 
         print("\n  --- Calculating Adjusted RS Ratings for all stocks ---")
-        # 获取足够计算 STRATEGY_PERIOD 的数据，增加一些冗余
         start_date_rs = (target_date - timedelta(days=STRATEGY_PERIOD + 60)).strftime('%Y-%m-%d')
         response = supabase.table('daily_bars') \
             .select('symbol, date, close') \
@@ -87,5 +86,71 @@ def main():
             print(f"\n  --- Processing indicator batch {current_batch_num}/{total_batches} ---")
             
             start_date_batch = (target_date - timedelta(days=STRATEGY_PERIOD + 60)).strftime('%Y-%m-%d')
+            
+            # ===> [FIXED] Corrected the string in the .select() call <===
             response = supabase.table('daily_bars') \
-                .select('symbol, da
+                .select('symbol, date, open, high, low, close, volume') \
+                .in_('symbol', batch_symbols) \
+                .gte('date', start_date_batch) \
+                .lte('date', target_date_str) \
+                .order('date', desc=False) \
+                .execute()
+            
+            if not response.data:
+                print("    -> No historical data for this batch. Skipping.")
+                continue
+            
+            df_batch = pd.DataFrame(response.data)
+            
+            def calculate_all_indicators(group):
+                CLOSE = group['close']; HIGH = group['high']; LOW = group['low']; VOLUME = group['volume']
+                
+                group['ma10'] = MA(CLOSE, 10)
+                group['ma20'] = MA(CLOSE, 20)
+                group['ma50'] = MA(CLOSE, 50)
+                group['ma60'] = MA(CLOSE, 60)
+                group['ma150'] = MA(CLOSE, 150)
+
+                group['high_52w'] = HIGH.rolling(window=STRATEGY_PERIOD, min_periods=1).max()
+                group['low_52w'] = LOW.rolling(window=STRATEGY_PERIOD, min_periods=1).min()
+                
+                group['volume_ma10'] = VOLUME.rolling(window=10).mean()
+                group['volume_ma30'] = VOLUME.rolling(window=30).mean()
+                group['volume_ma60'] = VOLUME.rolling(window=60).mean()
+                group['volume_ma90'] = VOLUME.rolling(window=90).mean()
+
+                if len(CLOSE) >= 30:
+                    DIF, DEA, _ = MACD(CLOSE.values); group['macd_diff'] = DIF; group['macd_dea'] = DEA
+                    group['rsi14'] = RSI(CLOSE.values, 14)
+                return group
+
+            df_with_ta = df_batch.groupby('symbol', group_keys=False).apply(calculate_all_indicators)
+            today_indicators = df_with_ta[df_with_ta['date'] == target_date_str].copy()
+            
+            records_to_upsert = []
+            indicator_columns = [
+                'ma10', 'ma20', 'ma50', 'ma60', 'ma150', 'high_52w', 'low_52w',
+                'volume_ma10', 'volume_ma30', 'volume_ma60', 'volume_ma90',
+                'macd_diff', 'macd_dea', 'rsi14'
+            ]
+            for index, row in today_indicators.iterrows():
+                record = {'symbol': row['symbol'], 'date': row['date']}
+                for col in indicator_columns:
+                    if col in row and pd.notna(row[col]):
+                        record[col] = float(row[col])
+                if len(record) > 2:
+                    records_to_upsert.append(record)
+            
+            if records_to_upsert:
+                print(f"    -> Calculated indicators for {len(records_to_upsert)} stocks. Upserting...")
+                supabase.table('daily_metrics').upsert(records_to_upsert, on_conflict='symbol,date').execute()
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+        
+    print("\n--- Job Finished: Calculate All Indicators ---")
+
+if __name__ == '__main__':
+    main()

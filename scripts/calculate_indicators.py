@@ -1,33 +1,73 @@
-name: 3. Calculate Indicators
+# scripts/calculate_indicators.py
+import os, sys
+from supabase import create_client, Client
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from MyTT import *
 
-on:
-  workflow_run:
-    workflows: ["2. Update Daily Metrics"] # 在“获取指标”成功后触发
-    types:
-      - completed
-  workflow_dispatch:
+load_dotenv()
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-jobs:
-  run-script:
-    runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+def main():
+    print("--- Starting Job: [3/3] Calculate Technical Indicators ---")
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("Error: Supabase credentials not found in environment."); sys.exit(1)
+        
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    
+    target_date = datetime.now().date()
+    target_date_str = target_date.strftime('%Y-%m-%d')
+    
+    print("Fetching recent historical data for calculation...")
+    all_historical_data = []
+    page = 0
+    while True:
+        response = supabase.table('daily_bars').select('symbol, date, open, high, low, close, volume').gte('date', (target_date - timedelta(days=150)).strftime('%Y-%m-%d')).lte('date', target_date_str).order('date', desc=False).range(page * 1000, (page + 1) * 1000 - 1).execute()
+        if not response.data: break
+        all_historical_data.extend(response.data)
+        if len(response.data) < 1000: break
+        page += 1
+    
+    if not all_historical_data:
+        print("No historical data found. Job finished."); return
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.12'
+    df = pd.DataFrame(all_historical_data)
+    print(f"Fetched {len(df)} rows for calculation.")
+    
+    def calculate_mytt(group):
+        CLOSE = group['close'].values; HIGH = group['high'].values; LOW = group['low'].values; VOL = group['volume'].values.astype(float)
+        if len(CLOSE) < 60: return group
+        group['ma5'] = MA(CLOSE, 5); group['ma10'] = MA(CLOSE, 10); group['ma20'] = MA(CLOSE, 20); group['ma60'] = MA(CLOSE, 60)
+        group['rsi14'] = RSI(CLOSE, 14)
+        DIF, DEA, MACD_BAR = MACD(CLOSE); group['macd_diff'] = DIF; group['macd_dea'] = DEA
+        K, D, J = KDJ(CLOSE, HIGH, LOW); group['kdj_k'] = K; group['kdj_d'] = D; group['kdj_j'] = J
+        return group
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+    print("Calculating all indicators...")
+    df_with_ta = df.groupby('symbol', group_keys=False).apply(calculate_mytt)
+    
+    today_indicators = df_with_ta[df_with_ta['date'] == target_date_str].copy()
+    
+    records_to_upsert = []
+    indicator_columns = ['ma5', 'ma10', 'ma20', 'ma60', 'rsi14', 'macd_diff', 'macd_dea', 'kdj_k', 'kdj_d', 'kdj_j']
+    
+    for index, row in today_indicators.iterrows():
+        record = {'symbol': row['symbol'], 'date': row['date']}
+        for col in indicator_columns:
+            if col in row and pd.notna(row[col]):
+                record[col] = float(row[col])
+        if len(record) > 2:
+            records_to_upsert.append(record)
+    
+    if records_to_upsert:
+        print(f"Upserting {len(records_to_upsert)} records with calculated indicators...")
+        supabase.table('daily_metrics').upsert(records_to_upsert, on_conflict='symbol,date').execute()
+        print("Technical indicators updated successfully!")
+        
+    print("--- Job Finished: Calculate Technical Indicators ---")
 
-      - name: Run calculate_indicators.py
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        # --- 关键修复：直接运行根目录下的脚本 ---
-        run: python calculate_indicators.py
+if __name__ == '__main__':
+    main()

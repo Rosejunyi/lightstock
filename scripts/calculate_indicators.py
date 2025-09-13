@@ -1,4 +1,4 @@
-# scripts/calculate_indicators.py (Final Corrected Version)
+# scripts/calculate_indicators.py (最终修复版 - 解决数据类型问题)
 import os
 import sys
 from supabase import create_client, Client
@@ -14,12 +14,8 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 # --------------------
 
-# ===> [策略调整] <===
-# 为了适应约180天的历史数据，我们将长周期指标进行合理降级
-# 原始52周(250天) -> 降级为24周(120天)
 STRATEGY_PERIOD = 120 
 print(f"\n!!! RUNNING IN ADJUSTED STRATEGY MODE (Using {STRATEGY_PERIOD}-day periods) !!!\n")
-# ===> [策略调整结束] <===
 
 def main():
     print("--- Starting Job: [3/3] Calculate All Indicators (Adjusted Strategy Engine) ---")
@@ -58,6 +54,9 @@ def main():
         
         df_all = pd.DataFrame(response.data)
         
+        # ===> [终极修复] 强制统一日期格式为标准字符串 <===
+        df_all['date'] = pd.to_datetime(df_all['date']).dt.strftime('%Y-%m-%d')
+        
         def calculate_return(group):
             if len(group) < STRATEGY_PERIOD: return None
             start_price = group['close'].iloc[-STRATEGY_PERIOD]
@@ -87,7 +86,6 @@ def main():
             
             start_date_batch = (target_date - timedelta(days=STRATEGY_PERIOD + 60)).strftime('%Y-%m-%d')
             
-            # ===> [FIXED] Corrected the string in the .select() call <===
             response = supabase.table('daily_bars') \
                 .select('symbol, date, open, high, low, close, volume') \
                 .in_('symbol', batch_symbols) \
@@ -102,23 +100,18 @@ def main():
             
             df_batch = pd.DataFrame(response.data)
             
+            # ===> [终极修复] 强制统一日期格式为标准字符串 <===
+            df_batch['date'] = pd.to_datetime(df_batch['date']).dt.strftime('%Y-%m-%d')
+            
             def calculate_all_indicators(group):
                 CLOSE = group['close']; HIGH = group['high']; LOW = group['low']; VOLUME = group['volume']
                 
-                group['ma10'] = MA(CLOSE, 10)
-                group['ma20'] = MA(CLOSE, 20)
-                group['ma50'] = MA(CLOSE, 50)
-                group['ma60'] = MA(CLOSE, 60)
-                group['ma150'] = MA(CLOSE, 150)
-
+                group['ma10'] = MA(CLOSE, 10); group['ma20'] = MA(CLOSE, 20); group['ma50'] = MA(CLOSE, 50)
+                group['ma60'] = MA(CLOSE, 60); group['ma150'] = MA(CLOSE, 150)
                 group['high_52w'] = HIGH.rolling(window=STRATEGY_PERIOD, min_periods=1).max()
                 group['low_52w'] = LOW.rolling(window=STRATEGY_PERIOD, min_periods=1).min()
-                
-                group['volume_ma10'] = VOLUME.rolling(window=10).mean()
-                group['volume_ma30'] = VOLUME.rolling(window=30).mean()
-                group['volume_ma60'] = VOLUME.rolling(window=60).mean()
-                group['volume_ma90'] = VOLUME.rolling(window=90).mean()
-
+                group['volume_ma10'] = VOLUME.rolling(window=10).mean(); group['volume_ma30'] = VOLUME.rolling(window=30).mean()
+                group['volume_ma60'] = VOLUME.rolling(window=60).mean(); group['volume_ma90'] = VOLUME.rolling(window=90).mean()
                 if len(CLOSE) >= 30:
                     DIF, DEA, _ = MACD(CLOSE.values); group['macd_diff'] = DIF; group['macd_dea'] = DEA
                     group['rsi14'] = RSI(CLOSE.values, 14)

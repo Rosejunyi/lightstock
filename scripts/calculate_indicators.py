@@ -1,4 +1,4 @@
-# scripts/calculate_indicators.py (全功率最终版 - 已修复所有缩进问题)
+# scripts/calculate_indicators.py (策略调整版 - 适应有限历史数据)
 import os
 import sys
 from supabase import create_client, Client
@@ -14,8 +14,15 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 # --------------------
 
+# ===> [策略调整] <===
+# 为了适应约180天的历史数据，我们将长周期指标进行合理降级
+# 原始52周(250天) -> 降级为24周(120天)
+STRATEGY_PERIOD = 120 
+print(f"\n!!! RUNNING IN ADJUSTED STRATEGY MODE (Using {STRATEGY_PERIOD}-day periods) !!!\n")
+# ===> [策略调整结束] <===
+
 def main():
-    print("--- Starting Job: [3/3] Calculate All Indicators (Full Power Engine) ---")
+    print("--- Starting Job: [3/3] Calculate All Indicators (Adjusted Strategy Engine) ---")
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("Error: Supabase credentials not found."); sys.exit(1)
         
@@ -39,8 +46,9 @@ def main():
         all_symbols = [item['symbol'] for item in response.data]
         print(f"  -> Found {len(all_symbols)} symbols for calculation.")
 
-        print("\n  --- Calculating RS Ratings for all stocks ---")
-        start_date_rs = (target_date - timedelta(days=400)).strftime('%Y-%m-%d')
+        print("\n  --- Calculating Adjusted RS Ratings for all stocks ---")
+        # 获取足够计算 STRATEGY_PERIOD 的数据，增加一些冗余
+        start_date_rs = (target_date - timedelta(days=STRATEGY_PERIOD + 60)).strftime('%Y-%m-%d')
         response = supabase.table('daily_bars') \
             .select('symbol, date, close') \
             .gte('date', start_date_rs) \
@@ -52,15 +60,14 @@ def main():
         df_all = pd.DataFrame(response.data)
         
         def calculate_return(group):
-            if len(group) < 250: return None
-            start_price = group['close'].iloc[-250]
+            if len(group) < STRATEGY_PERIOD: return None
+            start_price = group['close'].iloc[-STRATEGY_PERIOD]
             end_price = group['close'].iloc[-1]
             return (end_price / start_price - 1) if start_price != 0 else 0
 
         returns = df_all.groupby('symbol').apply(calculate_return).dropna()
         rs_ratings = returns.rank(pct=True) * 100
-
-        # ===> [已修复] 兼容性及缩进问题 <===
+        
         rs_ratings_df = rs_ratings.reset_index()
         rs_ratings_df = rs_ratings_df.rename(columns={0: 'rs_rating', 'symbol': 'symbol'})
         
@@ -79,65 +86,6 @@ def main():
             current_batch_num = i//batch_size + 1
             print(f"\n  --- Processing indicator batch {current_batch_num}/{total_batches} ---")
             
-            start_date_batch = (target_date - timedelta(days=400)).strftime('%Y-%m-%d')
+            start_date_batch = (target_date - timedelta(days=STRATEGY_PERIOD + 60)).strftime('%Y-%m-%d')
             response = supabase.table('daily_bars') \
-                .select('symbol, date, open, high, low, close, volume') \
-                .in_('symbol', batch_symbols) \
-                .gte('date', start_date_batch) \
-                .lte('date', target_date_str) \
-                .order('date', desc=False) \
-                .execute()
-            
-            if not response.data:
-                print("    -> No historical data for this batch. Skipping.")
-                continue
-            
-            df_batch = pd.DataFrame(response.data)
-            
-            def calculate_all_indicators(group):
-                CLOSE = group['close']; HIGH = group['high']; LOW = group['low']; VOLUME = group['volume']
-                group['ma10'] = MA(CLOSE, 10); group['ma20'] = MA(CLOSE, 20); group['ma50'] = MA(CLOSE, 50)
-                group['ma150'] = MA(CLOSE, 150); group['ma200'] = MA(CLOSE, 200)
-                group['high_52w'] = HIGH.rolling(window=250, min_periods=1).max()
-                group['low_52w'] = LOW.rolling(window=250, min_periods=1).min()
-                group['volume_ma10'] = VOLUME.rolling(window=10).mean()
-                group['volume_ma30'] = VOLUME.rolling(window=30).mean()
-                group['volume_ma60'] = VOLUME.rolling(window=60).mean()
-                group['volume_ma90'] = VOLUME.rolling(window=90).mean()
-                if len(CLOSE) >= 30:
-                    DIF, DEA, _ = MACD(CLOSE.values); group['macd_diff'] = DIF; group['macd_dea'] = DEA
-                    group['rsi14'] = RSI(CLOSE.values, 14)
-                return group
-
-            df_with_ta = df_batch.groupby('symbol', group_keys=False).apply(calculate_all_indicators)
-            today_indicators = df_with_ta[df_with_ta['date'] == target_date_str].copy()
-            
-            records_to_upsert = []
-            indicator_columns = [
-                'ma10', 'ma20', 'ma50', 'ma150', 'ma200', 'high_52w', 'low_52w',
-                'volume_ma10', 'volume_ma30', 'volume_ma60', 'volume_ma90',
-                'macd_diff', 'macd_dea', 'rsi14'
-            ]
-            for index, row in today_indicators.iterrows():
-                record = {'symbol': row['symbol'], 'date': row['date']}
-                for col in indicator_columns:
-                    if col in row and pd.notna(row[col]):
-                        record[col] = float(row[col])
-                if len(record) > 2:
-                    records_to_upsert.append(record)
-            
-            if records_to_upsert:
-                print(f"    -> Calculated indicators for {len(records_to_upsert)} stocks. Upserting...")
-                supabase.table('daily_metrics').upsert(records_to_upsert, on_conflict='symbol,date').execute()
-
-    except Exception as e:
-        print(f"  -> An error occurred during Python calculation: {e}")
-        # 增加这行来打印更详细的错误信息
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-        
-    print("\n--- Job Finished: Calculate All Indicators ---")
-
-if __name__ == '__main__':
-    main()
+                .select('symbol, da

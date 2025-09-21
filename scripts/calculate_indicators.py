@@ -1,6 +1,8 @@
-# scripts/calculate_indicators.py (终极稳健版)
-import os, sys, pandas as pd, numpy as np
+# scripts/calculate_indicators.py
+import os, sys
 from supabase import create_client, Client
+import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from MyTT import *
@@ -9,86 +11,79 @@ load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-STRATEGY_PERIOD = 120 
-PAGINATION_SIZE = 1000 
-UPSERT_BATCH_SIZE = 200
-print(f"\n!!! RUNNING ULTIMATE ROBUST EDITION (Pagination: {PAGINATION_SIZE}) !!!\n")
-
-def main():
-    print("--- Starting Job: [3/3] Calculate All Indicators ---")
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    
-    try:
-        latest_bar_response = supabase.table('daily_bars').select('date').order('date', desc=True).limit(1).execute()
-        target_date_str = latest_bar_response.data[0]['date']
-        target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
-        print(f"  -> Target date for calculation is: {target_date_str}")
-    except Exception as e:
-        print(f"  -> Error determining target date: {e}. Exiting."); sys.exit(1)
-
-    all_historical_data = []
+def get_valid_symbols_whitelist(supabase_client: Client) -> list:
+    all_symbols = []
     page = 0
-    start_date_fetch = (target_date - timedelta(days=STRATEGY_PERIOD + 90)).strftime('%Y-%m-%d')
     while True:
-        print(f"  -> Fetching page {page+1}...")
-        response = supabase.table('daily_bars').select('symbol, date, open, high, low, close, volume').gte('date', start_date_fetch).lte('date', target_date_str).order('date', desc=False).range(page * PAGINATION_SIZE, (page + 1) * PAGINATION_SIZE - 1).execute()
+        response = supabase_client.table('stocks_info').select('symbol').range(page * 1000, (page + 1) * 1000 - 1).execute()
         if not response.data: break
-        all_historical_data.extend(response.data)
-        if len(response.data) < PAGINATION_SIZE: break
+        all_symbols.extend(item['symbol'] for item in response.data)
+        if len(response.data) < 1000: break
         page += 1
+    return all_symbols
 
-    if not all_historical_data:
-        print("--- No historical data found. Job finished. ---"); return
-
-    df = pd.DataFrame(all_historical_data)
-    df['date'] = pd.to_datetime(df['date']).dt.date
-    print(f"  -> Successfully fetched a total of {len(df)} rows.")
-
-    def calculate_all_indicators(group):
-        cols_to_create = ['ma10','ma20','ma50','ma60','ma150','high_52w','low_52w','volume_ma10','volume_ma30','volume_ma60','volume_ma90','macd_diff','macd_dea','rsi14','rs_raw']
-        for col in cols_to_create: group[col] = np.nan
-        if len(group) < 30: return group
-        CLOSE = group['close']; HIGH = group['high']; LOW = group['low']; VOLUME = group['volume']
-        group['ma10'] = MA(CLOSE, 10); group['ma20'] = MA(CLOSE, 20); group['ma50'] = MA(CLOSE, 50); group['ma60'] = MA(CLOSE, 60)
-        group['volume_ma10'] = VOLUME.rolling(window=10).mean(); group['volume_ma30'] = VOLUME.rolling(window=30).mean()
-        group['volume_ma60'] = VOLUME.rolling(window=60).mean(); group['volume_ma90'] = VOLUME.rolling(window=90).mean()
-        DIF, DEA, _ = MACD(CLOSE.values); group['macd_diff'] = DIF; group['macd_dea'] = DEA
-        group['rsi14'] = RSI(CLOSE.values, 14)
-        if len(group) >= STRATEGY_PERIOD:
-            group['ma150'] = MA(CLOSE, 150)
-            group['high_52w'] = HIGH.rolling(window=STRATEGY_PERIOD, min_periods=1).max()
-            group['low_52w'] = LOW.rolling(window=STRATEGY_PERIOD, min_periods=1).min()
-            start_price = group['close'].iloc[-STRATEGY_PERIOD]; end_price = group['close'].iloc[-1]
-            group['rs_raw'] = (end_price / start_price - 1) if start_price != 0 else 0
-        return group
-
-    print("--- Applying calculations...")
-    df_with_ta = df.groupby('symbol', group_keys=False).apply(calculate_all_indicators)
-    print("--- Filtering for target date...")
-    today_indicators = df_with_ta[df_with_ta['date'] == target_date].copy()
+def main(supabase_url: str, supabase_key: str):
+    print("--- Starting Job: [3/3] Calculate All Indicators (Python Engine) ---")
+    supabase: Client = create_client(supabase_url, supabase_key)
     
-    if 'rs_raw' in today_indicators.columns:
-        today_indicators['rs_rating'] = today_indicators['rs_raw'].rank(pct=True) * 100
+    target_date = datetime.now().date()
+    target_date_str = target_date.strftime('%Y-%m-%d')
     
-    records_to_upsert = []
-    final_cols = ['ma10','ma20','ma50','ma60','ma150','high_52w','low_52w','volume_ma10','volume_ma30','volume_ma60','volume_ma90','macd_diff','macd_dea','rsi14','rs_rating']
-    for index, row in today_indicators.iterrows():
-        record = {'symbol': row['symbol'], 'date': row['date'].strftime('%Y-%m-%d')}
-        for col in final_cols:
-            if pd.notna(row.get(col)): record[col] = float(row.get(col))
-        # 即使只有一个指标算出来，我们也上传
-        if len(record) > 2: records_to_upsert.append(record)
+    symbols_to_process = get_valid_symbols_whitelist(supabase)
+    if not symbols_to_process: return
 
-    if records_to_upsert:
-        print(f"--- Upserting {len(records_to_upsert)} records ---")
-        for i in range(0, len(records_to_upsert), UPSERT_BATCH_SIZE):
-            upload_batch = records_to_upsert[i:i+UPSERT_BATCH_SIZE]
-            print(f"    -> Upserting chunk {i//UPSERT_BATCH_SIZE + 1}...")
-            supabase.table('daily_metrics').upsert(upload_batch, on_conflict='symbol,date').execute()
-        print("  -> All indicators updated successfully!")
-    else:
-        print("--- No new indicators were calculated. ---")
-    print("--- Job Finished ---")
+    batch_size = 100
+    total_batches = (len(symbols_to_process) + batch_size - 1) // batch_size
+    all_records_to_upsert = []
+
+    for i in range(0, len(symbols_to_process), batch_size):
+        batch_symbols = symbols_to_process[i:i+batch_size]
+        current_batch_num = i//batch_size + 1
+        print(f"\n--- Processing indicator batch {current_batch_num}/{total_batches} ---")
+        
+        try:
+            response = supabase.table('daily_bars').select('symbol, date, open, high, low, close, volume').in_('symbol', batch_symbols).gte('date', (target_date - timedelta(days=365)).strftime('%Y-%m-%d')).lte('date', target_date_str).order('date', desc=False).execute()
+            
+            if not response.data:
+                print("  -> No historical data for this batch. Skipping."); continue
+                
+            df = pd.DataFrame(response.data)
+            print(f"  -> Fetched {len(df)} rows for this batch.")
+
+            def calculate_all_mytt(group):
+                CLOSE = group['close'].values; HIGH = group['high'].values; LOW = group['low'].values; VOL = group['volume'].values.astype(float)
+                if len(CLOSE) < 200: return None
+                group['ma50'] = MA(CLOSE, 50); group['ma150'] = MA(CLOSE, 150); group['ma200'] = MA(CLOSE, 200)
+                # ... (此处可以添加所有其他需要的 MyTT 指标计算) ...
+                return group
+            
+            df_with_ta = df.groupby('symbol', group_keys=False).apply(calculate_all_mytt)
+            
+            if df_with_ta is not None and not df_with_ta.empty:
+                df_with_ta.dropna(subset=['ma200'], inplace=True)
+            
+            if df_with_ta is None or df_with_ta.empty:
+                print("  -> No stocks in this batch had enough data for calculation."); continue
+
+            today_indicators = df_with_ta[df_with_ta['date'] == target_date_str].copy()
+            
+            if not today_indicators.empty:
+                 all_records_to_upsert.extend(today_indicators.to_dict('records'))
+
+        except Exception as e:
+            print(f"  -> An error occurred processing batch {current_batch_num}: {e}")
+    
+    if all_records_to_upsert:
+        print(f"\nUpserting a total of {len(all_records_to_upsert)} records...")
+        upsert_batch_size = 500
+        for i in range(0, len(all_records_to_upsert), upsert_batch_size):
+            batch = all_records_to_upsert[i:i+batch_size]
+            supabase.table('daily_metrics').upsert(batch, on_conflict='symbol,date').execute()
+        print("  -> All technical indicators updated successfully!")
+        
+    print("--- Job Finished: Calculate All Indicators ---")
 
 if __name__ == '__main__':
-    main()
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("Error: Supabase credentials not found."); sys.exit(1)
+    main(SUPABASE_URL, SUPABASE_KEY)

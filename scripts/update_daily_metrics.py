@@ -1,4 +1,4 @@
-# scripts/update_daily_metrics.py (最终的、强制 NaN 替换版)
+# scripts/update_daily_metrics.py
 import os, sys
 from supabase import create_client, Client
 import akshare as ak
@@ -24,12 +24,10 @@ def get_valid_symbols_whitelist(supabase_client: Client) -> set:
     print(f"  -> Whitelist created with {len(all_symbols)} symbols.")
     return all_symbols
     
-def main():
+def main(supabase_url: str, supabase_key: str):
     print("--- Starting Job: [2/3] Update Daily Metrics ---")
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        print("Error: Supabase credentials not found."); sys.exit(1)
         
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    supabase: Client = create_client(supabase_url, supabase_key)
     valid_symbols_whitelist = get_valid_symbols_whitelist(supabase)
     
     print("Fetching real-time metrics from AKShare...")
@@ -39,13 +37,9 @@ def main():
 
     print(f"Fetched {len(metrics_df)} metric records.")
     
-    # --- 核心修复：执行更强制、更彻底的数据消毒 ---
-    # 1. 替换无穷大值为 NaN
     metrics_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    # 2. 强制将所有 NaN 替换为 None
     df_cleaned = metrics_df.astype(object).where(pd.notna(metrics_df), None)
-    # ---------------------------------------------
-
+    
     records_to_upsert = []
     metrics_date = datetime.now().date().strftime('%Y-%m-%d')
     
@@ -74,10 +68,16 @@ def main():
 
     if records_to_upsert:
         print(f"Upserting {len(records_to_upsert)} valid metric records to daily_metrics...")
-        supabase.table('daily_metrics').upsert(records_to_upsert).execute()
+        batch_size = 500
+        for i in range(0, len(records_to_upsert), batch_size):
+            batch = records_to_upsert[i:i+batch_size]
+            supabase.table('daily_metrics').upsert(batch, on_conflict='symbol,date').execute()
+
         print("daily_metrics table updated successfully!")
         
     print("--- Job Finished: Update Daily Metrics ---")
 
 if __name__ == '__main__':
-    main()
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("Error: Supabase credentials not found."); sys.exit(1)
+    main(SUPABASE_URL, SUPABASE_KEY)

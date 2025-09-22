@@ -1,5 +1,6 @@
     supabase
     baostock
+    akshare
     pandas
     numpy
     python-dotenv

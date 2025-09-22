@@ -1,7 +1,6 @@
-supabase
-baostock
-pandas
-numpy
-python-dotenv
-MyTT
+    supabase
+    baostock
+    pandas
+    numpy
+    python-dotenv
 

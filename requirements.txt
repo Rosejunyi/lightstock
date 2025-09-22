@@ -2,5 +2,6 @@ supabase
 baostock
 pandas
 numpy
-pandas-ta
-python-dotenv 
+python-dotenv
+MyTT
+

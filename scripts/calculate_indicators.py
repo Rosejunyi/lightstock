@@ -86,4 +86,3 @@ def main(supabase_url: str, supabase_key: str):
     print("--- Job Finished: Calculate All Indicators ---")
 
 if __name__ == '__main__':
-    # ... (和之前一样)

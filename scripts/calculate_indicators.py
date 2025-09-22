@@ -1,135 +1,118 @@
-# scripts/calculate_indicators.py (最终的、完整的、智能降级计算版)
-import os, sys
+# scripts/update_daily_bars.py (最终的、完整的、缩进和逻辑修复版)
+import os
+import sys
+import time
 from supabase import create_client, Client
+import baostock as bs
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-# 确保 MyTT.py 在同一个 scripts 文件夹内
-from MyTT import *
 
-# --- 1. 配置加载 ---
+# --- 配置加载在顶层，必须顶格 ---
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-# --------------------
 
-def get_valid_symbols_whitelist(supabase_client: Client) -> list:
-    """ 从 stocks_info 分页获取所有有效的股票 symbol 列表 """
-    print("Fetching whitelist from stocks_info (with pagination)...")
-    all_symbols = []
+# --- 函数定义，必须顶格 ---
+def get_last_date_from_db(supabase_client: Client) -> datetime.date:
+    # 函数内部的代码，必须缩进
+    try:
+        response = supabase_client.table('daily_bars').select('date').order('date', desc=True).limit(1).execute()
+        if response.data:
+            return datetime.strptime(response.data[0]['date'], '%Y-%m-%d').date()
+    except Exception as e:
+        print(f"Warning: Could not get last date from DB: {e}")
+    return datetime.strptime("2025-01-01", "%Y-%m-%d").date()
+
+def get_valid_symbols_whitelist(supabase_client: Client) -> set:
+    # 函数内部的代码，必须缩进
+    all_symbols = set()
     page = 0
     while True:
         response = supabase_client.table('stocks_info').select('symbol').range(page * 1000, (page + 1) * 1000 - 1).execute()
         if not response.data: break
-        all_symbols.extend(item['symbol'] for item in response.data)
+        all_symbols.update(item['symbol'] for item in response.data)
         if len(response.data) < 1000: break
         page += 1
-    print(f"  -> Whitelist created with {len(all_symbols)} symbols.")
     return all_symbols
 
-def main():
-    print("--- Starting Job: [3/3] Calculate All Indicators (Python Engine) ---")
+def main(supabase_url: str, supabase_key: str):
+    # 函数内部的代码，必须缩进
+    print("--- Starting Job: [1/3] Update Daily Bars (Baostock Version) ---")
+        
+    supabase: Client = create_client(supabase_url, supabase_key)
+    
+    lg = bs.login()
+    if lg.error_code != '0':
+        print(f"Baostock login failed: {lg.error_msg}"); sys.exit(1)
+    print("Baostock login successful.")
+
+    total_upserted_count = 0
+    try:
+        last_date_in_db = get_last_date_from_db(supabase)
+        date_to_process = last_date_in_db + timedelta(days=1)
+        today = datetime.now().date()
+
+        if date_to_process > today:
+            print("Daily bars are already up to date. Job finished."); return
+            
+        print(f"Starting backfill for daily_bars from {date_to_process} up to {today}.")
+        valid_symbols = get_valid_symbols_whitelist(supabase)
+        print(f"Found {len(valid_symbols)} symbols to track.")
+        
+        while date_to_process <= today:
+            date_str = date_to_process.strftime('%Y-%m-%d')
+            print(f"\n--- Processing date: {date_str} ---")
+            
+            records_for_today = []
+            
+            for i, symbol in enumerate(list(valid_symbols)):
+                sys.stdout.write(f"\r  -> Processing {i+1}/{len(valid_symbols)}: {symbol}...")
+                sys.stdout.flush()
+
+                bs_code = f"{symbol.split('.')[1].lower()}.{symbol.split('.')[0]}"
+                
+                rs = bs.query_history_k_data_plus(bs_code,
+                    "date,code,open,high,low,close,volume,amount",
+                    start_date=date_str, end_date=date_str,
+                    frequency="d", adjustflag="3")
+                
+                if rs.error_code == '0' and rs.next():
+                    record = rs.get_row_data()
+                    try:
+                        if all(field != '' for field in record[2:8]):
+                            records_for_today.append({
+                                "symbol": symbol, "date": record[0],
+                                "open": float(record[2]), "high": float(record[3]),
+                                "low": float(record[4]), "close": float(record[5]),
+                                "volume": int(record[6]), "amount": int(float(record[7]))
+                            })
+                    except (ValueError, TypeError): continue
+                
+                time.sleep(0.01)
+
+            if records_for_today:
+                print(f"\n  -> Found {len(records_for_today)} valid records for {date_str}. Upserting now...")
+                batch_size = 500
+                for i in range(0, len(records_for_today), batch_size):
+                    batch = records_for_today[i:i+batch_size]
+                    supabase.table('daily_bars').upsert(batch).execute()
+
+                total_upserted_count += len(records_for_today)
+                print(f"  -> Successfully upserted data for {date_str}.")
+            else:
+                print(f"  -> No trading data found for {date_str} (likely not a trading day).")
+
+            date_to_process += timedelta(days=1)
+            
+    finally:
+        bs.logout()
+        print("\nBaostock logout successful.")
+        print(f"\n--- Job Finished: Update Daily Bars. Total records upserted in this run: {total_upserted_count} ---")
+
+# --- 程序的启动入口，必须顶格 ---
+if __name__ == '__main__':
+    # 内部的代码，必须缩进
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("Error: Supabase credentials not found."); sys.exit(1)
-        
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    
-    target_date = datetime.now().date()
-    target_date_str = target_date.strftime('%Y-%m-%d')
-    
-    symbols_to_process = get_valid_symbols_whitelist(supabase)
-    if not symbols_to_process: return
-
-    batch_size = 100
-    total_batches = (len(symbols_to_process) + batch_size - 1) // batch_size
-    all_records_to_upsert = []
-
-    for i in range(0, len(symbols_to_process), batch_size):
-        batch_symbols = symbols_to_process[i:i+batch_size]
-        current_batch_num = i//batch_size + 1
-        print(f"\n--- Processing indicator batch {current_batch_num}/{total_batches} ---")
-        
-        try:
-            # 获取足够长的历史数据来进行计算
-            response = supabase.table('daily_bars') \
-                .select('symbol, date, open, high, low, close, volume') \
-                .in_('symbol', batch_symbols) \
-                .gte('date', (target_date - timedelta(days=365)).strftime('%Y-%m-%d')) \
-                .lte('date', target_date_str) \
-                .order('date', desc=False) \
-                .execute()
-            
-            if not response.data:
-                print("  -> No historical data for this batch. Skipping.")
-                continue
-                
-            df = pd.DataFrame(response.data)
-            print(f"  -> Fetched {len(df)} rows for this batch.")
-
-            # --- 核心修复：智能降级计算函数 ---
-            def calculate_all_mytt_safely(group):
-                CLOSE = group['close'].values; HIGH = group['high'].values; LOW = group['low'].values; VOL = group['volume'].values.astype(float)
-                
-                # 为所有可能的指标创建一个空的 Series，防止 KeyE-rror
-                for col in ['change_percent', 'volume_ratio_5d', 'change_percent_10d', 'ma5', 'ma10', 'ma20', 'ma50', 'ma60', 'ma150', 'ma200', 'macd_diff', 'macd_dea', 'kdj_k', 'kdj_d', 'kdj_j', 'rsi14', 'high_52w', 'low_52w']:
-                    group[col] = np.nan
-
-                # 智能地、逐个地进行计算
-                if len(CLOSE) > 1: group['change_percent'] = (CLOSE / REF(CLOSE, 1) - 1) * 100
-                if len(VOL) >= 5: VOL_MA5 = MA(VOL, 5); group['volume_ratio_5d'] = np.where(VOL_MA5 > 0, VOL / VOL_MA5, np.nan)
-                if len(CLOSE) > 10: group['change_percent_10d'] = (CLOSE / REF(CLOSE, 10) - 1) * 100
-                if len(CLOSE) >= 5: group['ma5'] = MA(CLOSE, 5)
-                if len(CLOSE) >= 10: group['ma10'] = MA(CLOSE, 10)
-                if len(CLOSE) >= 20: group['ma20'] = MA(CLOSE, 20)
-                if len(CLOSE) >= 50: group['ma50'] = MA(CLOSE, 50)
-                if len(CLOSE) >= 60: group['ma60'] = MA(CLOSE, 60)
-                if len(CLOSE) >= 150: group['ma150'] = MA(CLOSE, 150)
-                if len(CLOSE) >= 200: group['ma200'] = MA(CLOSE, 200)
-                if len(CLOSE) >= 26: DIF, DEA, _ = MACD(CLOSE); group['macd_diff'] = DIF; group['macd_dea'] = DEA
-                if len(CLOSE) >= 9: K, D, J = KDJ(CLOSE, HIGH, LOW); group['kdj_k'] = K; group['kdj_d'] = D; group['kdj_j'] = J
-                if len(CLOSE) >= 14: group['rsi14'] = RSI(CLOSE, 14)
-                if len(HIGH) >= 250: group['high_52w'] = HHV(HIGH, 250)
-                if len(LOW) >= 250: group['low_52w'] = LLV(LOW, 250)
-                
-                return group
-            
-            # 3. 分组计算
-            df_with_ta = df.groupby('symbol', group_keys=False).apply(calculate_all_mytt_safely)
-            
-            # 4. 筛选出目标日期的结果
-            today_indicators = df_with_ta[df_with_ta['date'] == target_date_str].copy()
-            
-            # 5. 准备上传
-            indicator_columns = [
-                'change_percent', 'volume_ratio_5d', 'change_percent_10d', 'ma5', 'ma10', 'ma20', 'ma50', 'ma60', 'ma150', 'ma200',
-                'macd_diff', 'macd_dea', 'kdj_k', 'kdj_d', 'kdj_j', 'rsi14', 'high_52w', 'low_52w'
-            ]
-            
-            for index, row in today_indicators.iterrows():
-                record = {'symbol': row['symbol'], 'date': row['date']}
-                # 逐个检查，计算出来了哪个（不是NaN），就添加哪个
-                for col in indicator_columns:
-                    if col in row and pd.notna(row[col]):
-                        record[col] = float(row[col])
-                
-                # 只要至少有一个指标被成功计算出来，就值得上传
-                if len(record) > 2:
-                    all_records_to_upsert.append(record)
-
-        except Exception as e:
-            print(f"  -> An error occurred processing batch {current_batch_num}: {e}")
-    
-    # 6. 在所有批次都处理完后，分批上传
-    if all_records_to_upsert:
-        print(f"\nUpserting a total of {len(all_records_to_upsert)} records with calculated indicators...")
-        upsert_batch_size = 500
-        for i in range(0, len(all_records_to_upsert), upsert_batch_size):
-            batch = all_records_to_upsert[i:i+batch_size]
-            supabase.table('daily_metrics').upsert(batch, on_conflict='symbol,date').execute()
-        print("  -> All technical and derived indicators updated successfully!")
-        
-    print("--- Job Finished: Calculate All Indicators ---")
-
-if __name__ == '__main__':
-    main()
+    main(SUPABASE_URL, SUPABASE_KEY)

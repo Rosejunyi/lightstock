@@ -1,4 +1,4 @@
-# scripts/calculate_indicators.py (完整版 - 包含所有指标)
+# scripts/calculate_indicators.py (优化版 - 使用新的SQL函数)
 import os, sys
 from supabase import create_client, Client
 from datetime import datetime
@@ -13,32 +13,36 @@ def main():
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     today_str = datetime.now().date().strftime('%Y-%m-%d')
     
-    # 依次调用所有 SQL 计算函数
-    functions_to_run = [
-        # 原有的函数
-        'calculate_short_ma',      # 短期均线 (5/10/20日)
-        'calculate_mid_ma',        # 中期均线 (30/60日)
-        'calculate_long_ma',       # 长期均线 (120/200日)
-        'calculate_all_rsi',       # RSI指标
-        'calculate_all_macd',      # MACD指标
+    # 🔥 使用新的一键计算函数
+    try:
+        print(f"  -> Calling comprehensive indicator function for date: {today_str}")
+        result = supabase.rpc('calculate_all_indicators_v2', {'target_date': today_str}).execute()
+        print(f"    ✅ All indicators calculated successfully!")
         
-        # 🔥 新增的函数（13项筛选所需）
-        'calculate_52w_high_low',  # 52周高低点
-        'calculate_rs_rating',     # 相对强度RS
-        'calculate_volume_ma',     # 成交量均线
-    ]
+    except Exception as e:
+        print(f"    ❌ Calculation failed: {e}")
+        
+        # 如果一键函数失败，回退到单独调用
+        print("  -> Falling back to individual function calls...")
+        functions_to_run = [
+            'calculate_short_ma',
+            'calculate_mid_ma', 
+            'calculate_long_ma',
+            'calculate_52w_high_low',
+            'calculate_rs_rating',
+            'calculate_volume_ma',
+        ]
+        
+        for func_name in functions_to_run:
+            try:
+                print(f"  -> Calling {func_name}...")
+                supabase.rpc(func_name, {'target_date': today_str}).execute()
+                print(f"    ✅ {func_name} OK")
+            except Exception as func_error:
+                print(f"    ❌ {func_name} failed: {func_error}")
+                continue
     
-    for func_name in functions_to_run:
-        try:
-            print(f"  -> Calling database function: {func_name}...")
-            supabase.rpc(func_name, {'target_date': today_str}).execute()
-            print(f"    ✅ {func_name} executed successfully!")
-        except Exception as e:
-            print(f"    ❌ {func_name} failed: {e}")
-            # 继续执行其他函数，不中断
-            continue
-    
-    print("--- Job Finished: All SQL calculation triggers sent. ---")
+    print("--- Job Finished: Indicator calculations completed. ---")
 
 if __name__ == '__main__':
     main()

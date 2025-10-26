@@ -1,4 +1,4 @@
-name: Daily-aliyun-StockData
+name: Daily-aliyun-StockData-V3
 
 # 触发方式
 on:
@@ -7,13 +7,14 @@ on:
     # 北京时间 周一到周五 16:30 (UTC 08:30)
     - cron: '30 8 * * 1-5'
   
-  # 2. 手动一键触发 (无需填写日期)
+  # 2. 手动一键触发
   workflow_dispatch:
 
 # 环境变量
 env:
   PYTHON_VERSION: '3.10'
   SERVER_PATH: '/root/lightstock'
+  CHECK_SERVER: 'true'  # 是否检查服务器数据状态
 
 jobs:
   update-stock-data:
@@ -37,30 +38,44 @@ jobs:
           pip install --upgrade pip
           pip install baostock pandas pyarrow tqdm
       
-      # 步骤4: 自动下载最新数据 (向前推3天)
-      - name: 📊 下载最新数据
-        run: |
-          echo "========================================"
-          echo "  开始自动更新股票数据"
-          echo "========================================"
-          echo ""
-          echo "策略: 自动获取最近3个交易日数据"
-          echo "说明: 覆盖最近3天,确保数据完整性"
-          echo ""
-          
-          # 运行更新脚本
-          python scripts/download_data_smart.py
-          
-          echo ""
-          echo "✅ 数据下载完成!"
-      
-      # 步骤5: 配置SSH
+      # 步骤4: 配置SSH (提前配置，供脚本检测服务器使用)
       - name: 🔑 配置SSH密钥
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+          
+          # 测试SSH连接
+          echo "测试SSH连接..."
+          ssh -i ~/.ssh/id_rsa -o ConnectTimeout=10 \
+            root@${{ secrets.SERVER_IP }} "echo '✅ SSH连接成功'" || \
+            echo "⚠️ SSH连接失败，将跳过服务器检测"
+      
+      # 步骤5: 智能更新数据 (V3版本)
+      - name: 📊 智能更新数据 (V3)
+        env:
+          SERVER_IP: ${{ secrets.SERVER_IP }}
+          SERVER_PATH: ${{ env.SERVER_PATH }}
+          CHECK_SERVER: ${{ env.CHECK_SERVER }}
+        run: |
+          echo "========================================"
+          echo "  开始智能更新股票数据 V3"
+          echo "========================================"
+          echo ""
+          echo "V3版本特性:"
+          echo "  ✅ 股票文件: 纯数字命名 (如 000001.parquet)"
+          echo "  ✅ 指数文件: 完整格式 (如 sh.000001.parquet)"
+          echo "  ✅ 优先检测阿里云服务器数据状态"
+          echo "  ✅ 数据已最新则自动跳过更新"
+          echo "  ✅ 需要更新时向前推3天确保完整性"
+          echo ""
+          
+          # 运行V3版本更新脚本
+          python scripts/download_data_smart.py
+          
+          echo ""
+          echo "✅ 更新流程完成!"
       
       # 步骤6: 上传到阿里云
       - name: 📤 上传到阿里云
@@ -72,15 +87,24 @@ jobs:
           echo "路径: ${{ env.SERVER_PATH }}/data/daily_parquet/"
           echo ""
           
-          # 上传所有parquet文件
-          scp -i ~/.ssh/id_rsa -r \
-            data/daily_parquet/*.parquet \
-            root@${{ secrets.SERVER_IP }}:${{ env.SERVER_PATH }}/data/daily_parquet/
+          # 检查是否有文件需要上传
+          file_count=$(ls -1 data/daily_parquet/*.parquet 2>/dev/null | wc -l)
           
-          echo ""
-          echo "✅ 上传完成!"
+          if [ "$file_count" -eq 0 ]; then
+            echo "ℹ️  没有需要上传的文件（数据可能已是最新）"
+          else
+            echo "📦 准备上传 $file_count 个文件..."
+            
+            # 上传所有parquet文件
+            scp -i ~/.ssh/id_rsa -r \
+              data/daily_parquet/*.parquet \
+              root@${{ secrets.SERVER_IP }}:${{ env.SERVER_PATH }}/data/daily_parquet/
+            
+            echo ""
+            echo "✅ 上传完成! ($file_count 个文件)"
+          fi
       
-      # 步骤7: 验证数据（简化版本，避免YAML语法问题）
+      # 步骤7: 验证服务器数据
       - name: ✅ 验证服务器数据
         run: |
           echo "========================================"
@@ -96,9 +120,66 @@ jobs:
             echo "  总大小: $(du -sh . | cut -f1)"
             echo ""
             
-            echo "📅 最新更新的5个文件:"
+            # 统计不同类型文件
+            pure=$(ls *.parquet 2>/dev/null | grep -E "^[0-9]+\.parquet$" | wc -l)
+            prefix=$(ls *.parquet 2>/dev/null | grep -E "^(sh|sz)\.[0-9]+\.parquet$" | wc -l)
+            
+            echo "📝 文件分类:"
+            echo "  股票文件(纯数字): $pure"
+            echo "  指数文件(带前缀): $prefix"
+            echo ""
+            
+            echo "📅 最新更新的文件示例:"
             ls -lt *.parquet 2>/dev/null | head -6
             echo ""
+            
+            # 检查指数文件
+            echo "🔍 核心指数文件检查:"
+            for idx in sh.000001 sh.000300 sz.399001 sz.399006; do
+              if [ -f "$idx.parquet" ]; then
+                echo "  ✅ $idx.parquet"
+              else
+                echo "  ❌ $idx.parquet 缺失"
+              fi
+            done
+            echo ""
+            
+            # 检查数据最新日期
+            echo "🔍 检查数据最新日期..."
+            python3 << "PYEOF"
+import pandas as pd
+from pathlib import Path
+import random
+
+try:
+    files = list(Path(".").glob("*.parquet"))
+    if files:
+        # 随机抽样检查
+        samples = random.sample(files, min(5, len(files)))
+        latest = None
+        
+        for f in samples:
+            try:
+                df = pd.read_parquet(f)
+                date_col = "日期" if "日期" in df.columns else "date"
+                if date_col in df.columns:
+                    file_latest = pd.to_datetime(df[date_col]).max()
+                    if latest is None or file_latest > latest:
+                        latest = file_latest
+                        latest_file = f.name
+            except:
+                continue
+        
+        if latest:
+            print(f"✅ 最新数据日期: {latest.strftime(\"%Y-%m-%d\")}")
+            print(f"   示例文件: {latest_file}")
+        else:
+            print("⚠️  无法读取数据日期")
+    else:
+        print("❌ 目录下没有parquet文件")
+except Exception as e:
+    print(f"❌ 检查失败: {e}")
+PYEOF
           '
           
           echo ""
@@ -116,11 +197,15 @@ jobs:
         if: success()
         run: |
           echo "========================================"
-          echo "  ✅ 股票数据更新成功!"
+          echo "  ✅ 股票数据更新成功! (V3版本)"
           echo "========================================"
           echo "更新时间: $(date '+%Y-%m-%d %H:%M:%S')"
-          echo "更新策略: 最近3个交易日"
+          echo "更新策略: 智能增量更新（向前推3天）"
           echo "服务器: ${{ secrets.SERVER_IP }}"
+          echo ""
+          echo "文件命名规范:"
+          echo "  ✅ 股票: 纯数字 (如 000001.parquet)"
+          echo "  ✅ 指数: 完整格式 (如 sh.000001.parquet)"
           echo "========================================"
       
       # 步骤10: 失败通知

@@ -1,23 +1,14 @@
-name: 阿里云daily_parquet 每日更新股票数据
+name: 每日自动更新阿里云轻量服务器股票数据parquet文件
 
-# 触发条件
+# 触发方式
 on:
-  # 1. 定时触发 (每个交易日收盘后)
+  # 1. 定时自动运行 (每个交易日收盘后)
   schedule:
-    # 北京时间 周一到周五 16:30 (UTC+8 = UTC 08:30)
+    # 北京时间 周一到周五 16:30 (UTC 08:30)
     - cron: '30 8 * * 1-5'
   
-  # 2. 手动触发
+  # 2. 手动一键触发 (无需填写日期)
   workflow_dispatch:
-    inputs:
-      start_date:
-        description: '开始日期 (YYYY-MM-DD)'
-        required: false
-        default: ''
-      end_date:
-        description: '结束日期 (YYYY-MM-DD)'
-        required: false
-        default: ''
 
 # 环境变量
 env:
@@ -34,34 +25,36 @@ jobs:
         uses: actions/checkout@v4
       
       # 步骤2: 设置Python环境
-      - name: 🐍 设置Python环境
+      - name: 🐍 设置Python
         uses: actions/setup-python@v4
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
       
       # 步骤3: 安装依赖
-      - name: 📦 安装Python依赖
+      - name: 📦 安装依赖
         run: |
-          python -m pip install --upgrade pip
+          pip install --upgrade pip
           pip install baostock pandas pyarrow tqdm
       
-      # 步骤4: 下载最新数据
-      - name: 📊 下载最新股票数据
+      # 步骤4: 自动下载最新数据 (向前推3天)
+      - name: 📊 下载最新数据
         run: |
-          echo "开始下载最新数据..."
+          echo "========================================"
+          echo "  开始自动更新股票数据"
+          echo "========================================"
+          echo ""
+          echo "策略: 自动获取最近3个交易日数据"
+          echo "说明: 覆盖最近3天,确保数据完整性"
+          echo ""
           
-          # 如果手动指定了日期,使用指定日期
-          if [ -n "${{ github.event.inputs.start_date }}" ]; then
-            python scripts/download_data_daily.py \
-              --start_date "${{ github.event.inputs.start_date }}" \
-              --end_date "${{ github.event.inputs.end_date }}"
-          else
-            # 否则只下载最近5个交易日的数据
-            python scripts/download_data_daily.py --recent_days 5
-          fi
+          # 运行更新脚本
+          python scripts/download_data_daily.py --recent_days 3
+          
+          echo ""
+          echo "✅ 数据下载完成!"
       
-      # 步骤5: 配置SSH密钥
+      # 步骤5: 配置SSH
       - name: 🔑 配置SSH密钥
         run: |
           mkdir -p ~/.ssh
@@ -69,44 +62,89 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
       
-      # 步骤6: 上传到服务器
-      - name: 📤 上传数据到阿里云服务器
+      # 步骤6: 上传到阿里云
+      - name: 📤 上传到阿里云
         run: |
-          echo "上传数据到服务器..."
+          echo "========================================"
+          echo "  上传数据到阿里云服务器"
+          echo "========================================"
+          echo "服务器: ${{ secrets.SERVER_IP }}"
+          echo "路径: ${{ env.SERVER_PATH }}/data/daily_parquet/"
+          echo ""
           
-          # 只上传新下载的文件(最近修改的)
+          # 上传所有parquet文件
           scp -i ~/.ssh/id_rsa -r \
             data/daily_parquet/*.parquet \
             root@${{ secrets.SERVER_IP }}:${{ env.SERVER_PATH }}/data/daily_parquet/
           
-          echo "✅ 数据上传完成!"
+          echo ""
+          echo "✅ 上传完成!"
       
-      # 步骤7: 验证服务器端数据
+      # 步骤7: 验证数据
       - name: ✅ 验证服务器数据
         run: |
-          echo "验证服务器端数据..."
+          echo "========================================"
+          echo "  验证服务器端数据"
+          echo "========================================"
+          echo ""
           
-          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} << 'EOF'
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} << 'SSHEOF'
             cd ${{ env.SERVER_PATH }}/data/daily_parquet/
             
             echo "📊 数据统计:"
-            echo "文件总数: $(ls -1 *.parquet 2>/dev/null | wc -l)"
-            echo "总大小: $(du -sh . | cut -f1)"
-            echo "最新文件:"
-            ls -lt *.parquet | head -5
-          EOF
+            echo "  文件总数: $(ls -1 *.parquet 2>/dev/null | wc -l)"
+            echo "  总大小: $(du -sh . | cut -f1)"
+            echo ""
+            
+            echo "📅 最新更新的5个文件:"
+            ls -lt *.parquet | head -6
+            echo ""
+            
+            echo "🔍 随机验证一个文件:"
+            python3 << 'PYEOF'
+import pandas as pd
+from pathlib import Path
+
+files = list(Path('.').glob('*.parquet'))
+if files:
+    df = pd.read_parquet(files[0])
+    print(f"  文件: {files[0].name}")
+    print(f"  记录数: {len(df)}")
+    print(f"  最新日期: {df['date'].max()}")
+else:
+    print("  ⚠️  未找到数据文件")
+PYEOF
+          SSHEOF
+          
+          echo ""
+          echo "✅ 验证完成!"
       
-      # 步骤8: 发送通知 (可选)
-      - name: 📧 发送成功通知
+      # 步骤8: 清理临时文件
+      - name: 🧹 清理临时文件
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa
+          echo "✅ 已清理SSH密钥"
+      
+      # 步骤9: 成功通知
+      - name: 🎉 更新成功
         if: success()
         run: |
-          echo "✅ 数据更新成功!"
+          echo "========================================"
+          echo "  ✅ 股票数据更新成功!"
+          echo "========================================"
           echo "更新时间: $(date '+%Y-%m-%d %H:%M:%S')"
+          echo "更新策略: 最近3个交易日"
+          echo "服务器: ${{ secrets.SERVER_IP }}"
+          echo "========================================"
       
-      # 步骤9: 失败处理
-      - name: ❌ 失败通知
+      # 步骤10: 失败通知
+      - name: ❌ 更新失败
         if: failure()
         run: |
-          echo "❌ 数据更新失败!"
+          echo "========================================"
+          echo "  ❌ 股票数据更新失败!"
+          echo "========================================"
           echo "失败时间: $(date '+%Y-%m-%d %H:%M:%S')"
-          # 可以在这里添加邮件或其他通知方式
+          echo "请检查日志查看详细错误信息"
+          echo "========================================"

@@ -80,7 +80,7 @@ jobs:
           echo ""
           echo "✅ 上传完成!"
       
-      # 步骤7: 验证数据
+      # 步骤7: 验证数据（简化版本，避免YAML语法问题）
       - name: ✅ 验证服务器数据
         run: |
           echo "========================================"
@@ -88,8 +88,8 @@ jobs:
           echo "========================================"
           echo ""
           
-          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} << 'SSHEOF'
-            cd ${{ env.SERVER_PATH }}/data/daily_parquet/
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} '
+            cd '"$SERVER_PATH"'/data/daily_parquet/
             
             echo "📊 数据统计:"
             echo "  文件总数: $(ls -1 *.parquet 2>/dev/null | wc -l)"
@@ -97,23 +97,9 @@ jobs:
             echo ""
             
             echo "📅 最新更新的5个文件:"
-            ls -lt *.parquet | head -6
+            ls -lt *.parquet 2>/dev/null | head -6
             echo ""
-            
-            echo "🔍 随机验证一个文件:"
-            python3 -c "
-import pandas as pd
-from pathlib import Path
-files = list(Path('.').glob('*.parquet'))
-if files:
-    df = pd.read_parquet(files[0])
-    print(f'  文件: {files[0].name}')
-    print(f'  记录数: {len(df)}')
-    print(f'  最新日期: {df[\"date\"].max()}')
-else:
-    print('  ⚠️  未找到数据文件')
-"
-          SSHEOF
+          '
           
           echo ""
           echo "✅ 验证完成!"

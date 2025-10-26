@@ -1,160 +1,153 @@
-name: Daily-aliyun-StockData-V3
+name: Daily-aliyun-StockData-V3-Complete
 
 on:
   schedule:
-    - cron: '30 8 * * 1-5'
+    - cron: '30 8 * * 1-5'  # 北京时间16:30（UTC+8）
   workflow_dispatch:
 
-env:
-  PYTHON_VERSION: '3.10'
-  SERVER_PATH: '/root/lightstock'
-  CHECK_SERVER: 'true'
-
 jobs:
-  update-stock-data:
+  update-data:
     runs-on: ubuntu-latest
     
     steps:
-      - name: 📥 检出代码
-        uses: actions/checkout@v4
+      - name: Checkout代码
+        uses: actions/checkout@v3
       
-      - name: 🐍 设置Python
+      - name: 设置Python环境
         uses: actions/setup-python@v4
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.10'
           cache: 'pip'
       
-      - name: 📦 安装依赖
+      - name: 安装依赖
         run: |
-          pip install --upgrade pip
           pip install baostock pandas pyarrow tqdm
       
-      - name: 🔑 配置SSH密钥
+      - name: 配置SSH密钥
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
-          
-          echo "测试SSH连接..."
-          ssh -i ~/.ssh/id_rsa -o ConnectTimeout=10 \
-            root@${{ secrets.SERVER_IP }} "echo '✅ SSH连接成功'" || \
-            echo "⚠️ SSH连接失败，将跳过服务器检测"
       
-      - name: 📊 智能更新数据 (V3)
+      - name: 测试SSH连接
+        run: |
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} "echo '✅ SSH连接成功'; hostname"
+      
+      - name: 智能更新原始数据 (V3.1)
+        run: |
+          python scripts/download_data_smart.py
         env:
           SERVER_IP: ${{ secrets.SERVER_IP }}
-          SERVER_PATH: ${{ env.SERVER_PATH }}
-          CHECK_SERVER: ${{ env.CHECK_SERVER }}
-        run: |
-          echo "========================================"
-          echo "  开始智能更新股票数据 V3"
-          echo "========================================"
-          echo ""
-          echo "V3版本特性:"
-          echo "  ✅ 股票文件: 纯数字命名 (如 000001.parquet)"
-          echo "  ✅ 指数文件: 完整格式 (如 sh.000001.parquet)"
-          echo "  ✅ 优先检测阿里云服务器数据状态"
-          echo "  ✅ 数据已最新则自动跳过更新"
-          echo "  ✅ 需要更新时向前推3天确保完整性"
-          echo ""
-          
-          python scripts/download_data_smart.py
-          
-          echo ""
-          echo "✅ 更新流程完成!"
+          SERVER_PATH: /root/lightstock
       
-      - name: 📤 上传到阿里云
+      - name: 处理复权数据
         run: |
-          echo "========================================"
-          echo "  上传数据到阿里云服务器"
-          echo "========================================"
-          echo "服务器: ${{ secrets.SERVER_IP }}"
-          echo "路径: ${{ env.SERVER_PATH }}/data/daily_parquet/"
-          echo ""
+          echo "=========================================="
+          echo "  开始处理复权数据"
+          echo "=========================================="
+          python scripts/download_processeddata.py
+      
+      - name: 上传原始数据到阿里云
+        run: |
+          echo "=========================================="
+          echo "  上传原始数据 (daily_parquet)"
+          echo "=========================================="
           
-          file_count=$(ls -1 data/daily_parquet/*.parquet 2>/dev/null | wc -l)
+          # 统计文件数
+          FILE_COUNT=$(find data/daily_parquet -name "*.parquet" 2>/dev/null | wc -l)
           
-          if [ "$file_count" -eq 0 ]; then
-            echo "ℹ️  没有需要上传的文件（数据可能已是最新）"
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "ℹ️  没有需要上传的原始数据"
           else
-            echo "📦 准备上传 $file_count 个文件..."
+            echo "📤 准备上传 $FILE_COUNT 个原始数据文件..."
             
-            scp -i ~/.ssh/id_rsa -r \
-              data/daily_parquet/*.parquet \
-              root@${{ secrets.SERVER_IP }}:${{ env.SERVER_PATH }}/data/daily_parquet/
+            # 确保服务器目录存在
+            ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} \
+              "mkdir -p /root/lightstock/data/daily_parquet"
             
-            echo ""
-            echo "✅ 上传完成! ($file_count 个文件)"
+            # 使用rsync上传，跳过相同文件
+            rsync -avz --progress \
+              -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/daily_parquet/ \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/daily_parquet/
+            
+            echo "✅ 原始数据上传完成"
           fi
       
-      - name: ✅ 验证服务器数据
+      - name: 上传复权数据到阿里云
         run: |
-          echo "========================================"
-          echo "  验证服务器端数据"
-          echo "========================================"
-          echo ""
+          echo "=========================================="
+          echo "  上传复权数据 (adjusted_parquet)"
+          echo "=========================================="
           
-          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} '
-            cd '"$SERVER_PATH"'/data/daily_parquet/
-            
-            echo "📊 数据统计:"
-            echo "  文件总数: $(ls -1 *.parquet 2>/dev/null | wc -l)"
-            echo "  总大小: $(du -sh . | cut -f1)"
-            echo ""
-            
-            pure=$(ls *.parquet 2>/dev/null | grep -E "^[0-9]+\.parquet$" | wc -l)
-            prefix=$(ls *.parquet 2>/dev/null | grep -E "^(sh|sz)\.[0-9]+\.parquet$" | wc -l)
-            
-            echo "📝 文件分类:"
-            echo "  股票文件(纯数字): $pure"
-            echo "  指数文件(带前缀): $prefix"
-            echo ""
-            
-            echo "📅 最新更新的文件示例:"
-            ls -lt *.parquet 2>/dev/null | head -6
-            echo ""
-            
-            echo "🔍 核心指数文件检查:"
-            for idx in sh.000001 sh.000300 sz.399001 sz.399006; do
-              if [ -f "$idx.parquet" ]; then
-                echo "  ✅ $idx.parquet"
-              else
-                echo "  ❌ $idx.parquet 缺失"
-              fi
-            done
-          '
+          # 统计文件数
+          FILE_COUNT=$(find data/adjusted_parquet -name "*.parquet" 2>/dev/null | wc -l)
           
-          echo ""
-          echo "✅ 验证完成!"
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "⚠️  没有复权数据文件"
+          else
+            echo "📤 准备上传 $FILE_COUNT 个复权数据文件..."
+            
+            # 确保服务器目录存在
+            ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} \
+              "mkdir -p /root/lightstock/data/adjusted_parquet"
+            
+            # 使用rsync上传，跳过相同文件
+            rsync -avz --progress \
+              -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/adjusted_parquet/ \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/adjusted_parquet/
+            
+            echo "✅ 复权数据上传完成"
+          fi
       
-      - name: 🧹 清理临时文件
-        if: always()
+      - name: 验证数据完整性
         run: |
-          rm -f ~/.ssh/id_rsa
-          echo "✅ 已清理SSH密钥"
-      
-      - name: 🎉 更新成功
-        if: success()
-        run: |
-          echo "========================================"
-          echo "  ✅ 股票数据更新成功! (V3版本)"
-          echo "========================================"
-          echo "更新时间: $(date '+%Y-%m-%d %H:%M:%S')"
-          echo "更新策略: 智能增量更新（向前推3天）"
-          echo "服务器: ${{ secrets.SERVER_IP }}"
-          echo ""
-          echo "文件命名规范:"
-          echo "  ✅ 股票: 纯数字 (如 000001.parquet)"
-          echo "  ✅ 指数: 完整格式 (如 sh.000001.parquet)"
-          echo "========================================"
-      
-      - name: ❌ 更新失败
-        if: failure()
-        run: |
-          echo "========================================"
-          echo "  ❌ 股票数据更新失败!"
-          echo "========================================"
-          echo "失败时间: $(date '+%Y-%m-%d %H:%M:%S')"
-          echo "请检查日志查看详细错误信息"
-          echo "========================================"
+          echo "=========================================="
+          echo "  验证阿里云服务器数据"
+          echo "=========================================="
+          
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} << 'EOF'
+            cd /root/lightstock/data
+            
+            echo "📊 原始数据 (daily_parquet):"
+            if [ -d "daily_parquet" ]; then
+              DAILY_COUNT=$(find daily_parquet -name "*.parquet" | wc -l)
+              echo "  文件数: $DAILY_COUNT"
+              
+              # 显示指数文件
+              echo "  指数文件:"
+              for idx in sh.000001 sh.000300 sz.399001 sz.399006; do
+                if [ -f "daily_parquet/${idx}.parquet" ]; then
+                  echo "    ✅ ${idx}.parquet"
+                else
+                  echo "    ❌ ${idx}.parquet 缺失"
+                fi
+              done
+            else
+              echo "  ❌ 目录不存在"
+            fi
+            
+            echo ""
+            echo "📈 复权数据 (adjusted_parquet):"
+            if [ -d "adjusted_parquet" ]; then
+              ADJUSTED_COUNT=$(find adjusted_parquet -name "*.parquet" | wc -l)
+              echo "  文件数: $ADJUSTED_COUNT"
+              
+              # 显示指数文件
+              echo "  指数文件:"
+              for idx in sh.000001 sh.000300 sz.399001 sz.399006; do
+                if [ -f "adjusted_parquet/${idx}.parquet" ]; then
+                  echo "    ✅ ${idx}.parquet"
+                else
+                  echo "    ❌ ${idx}.parquet 缺失"
+                fi
+              done
+            else
+              echo "  ❌ 目录不存在"
+            fi
+            
+            echo ""
+            echo "✅ 验证完成!"
+EOF

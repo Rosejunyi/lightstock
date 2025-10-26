@@ -49,7 +49,7 @@ jobs:
           echo ""
           
           # 运行更新脚本
-          python scripts/download_data_daily.py --recent_days 3
+          python scripts/download_data_smart.py
           
           echo ""
           echo "✅ 数据下载完成!"

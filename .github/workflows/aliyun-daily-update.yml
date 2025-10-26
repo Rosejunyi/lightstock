@@ -150,4 +150,3 @@ jobs:
             
             echo ""
             echo "✅ 验证完成!"
-EOF

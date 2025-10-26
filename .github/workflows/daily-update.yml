@@ -1,0 +1,112 @@
+name: 阿里云daily_parquet 每日更新股票数据
+
+# 触发条件
+on:
+  # 1. 定时触发 (每个交易日收盘后)
+  schedule:
+    # 北京时间 周一到周五 16:30 (UTC+8 = UTC 08:30)
+    - cron: '30 8 * * 1-5'
+  
+  # 2. 手动触发
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: '开始日期 (YYYY-MM-DD)'
+        required: false
+        default: ''
+      end_date:
+        description: '结束日期 (YYYY-MM-DD)'
+        required: false
+        default: ''
+
+# 环境变量
+env:
+  PYTHON_VERSION: '3.10'
+  SERVER_PATH: '/root/lightstock'
+
+jobs:
+  update-stock-data:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 步骤1: 检出代码
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+      
+      # 步骤2: 设置Python环境
+      - name: 🐍 设置Python环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      # 步骤3: 安装依赖
+      - name: 📦 安装Python依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install baostock pandas pyarrow tqdm
+      
+      # 步骤4: 下载最新数据
+      - name: 📊 下载最新股票数据
+        run: |
+          echo "开始下载最新数据..."
+          
+          # 如果手动指定了日期,使用指定日期
+          if [ -n "${{ github.event.inputs.start_date }}" ]; then
+            python scripts/download_data_daily.py \
+              --start_date "${{ github.event.inputs.start_date }}" \
+              --end_date "${{ github.event.inputs.end_date }}"
+          else
+            # 否则只下载最近5个交易日的数据
+            python scripts/download_data_daily.py --recent_days 5
+          fi
+      
+      # 步骤5: 配置SSH密钥
+      - name: 🔑 配置SSH密钥
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+      
+      # 步骤6: 上传到服务器
+      - name: 📤 上传数据到阿里云服务器
+        run: |
+          echo "上传数据到服务器..."
+          
+          # 只上传新下载的文件(最近修改的)
+          scp -i ~/.ssh/id_rsa -r \
+            data/daily_parquet/*.parquet \
+            root@${{ secrets.SERVER_IP }}:${{ env.SERVER_PATH }}/data/daily_parquet/
+          
+          echo "✅ 数据上传完成!"
+      
+      # 步骤7: 验证服务器端数据
+      - name: ✅ 验证服务器数据
+        run: |
+          echo "验证服务器端数据..."
+          
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} << 'EOF'
+            cd ${{ env.SERVER_PATH }}/data/daily_parquet/
+            
+            echo "📊 数据统计:"
+            echo "文件总数: $(ls -1 *.parquet 2>/dev/null | wc -l)"
+            echo "总大小: $(du -sh . | cut -f1)"
+            echo "最新文件:"
+            ls -lt *.parquet | head -5
+          EOF
+      
+      # 步骤8: 发送通知 (可选)
+      - name: 📧 发送成功通知
+        if: success()
+        run: |
+          echo "✅ 数据更新成功!"
+          echo "更新时间: $(date '+%Y-%m-%d %H:%M:%S')"
+      
+      # 步骤9: 失败处理
+      - name: ❌ 失败通知
+        if: failure()
+        run: |
+          echo "❌ 数据更新失败!"
+          echo "失败时间: $(date '+%Y-%m-%d %H:%M:%S')"
+          # 可以在这里添加邮件或其他通知方式

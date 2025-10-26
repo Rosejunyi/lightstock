@@ -101,19 +101,18 @@ jobs:
             echo ""
             
             echo "🔍 随机验证一个文件:"
-            python3 << 'PYEOF'
+            python3 -c "
 import pandas as pd
 from pathlib import Path
-
 files = list(Path('.').glob('*.parquet'))
 if files:
     df = pd.read_parquet(files[0])
-    print(f"  文件: {files[0].name}")
-    print(f"  记录数: {len(df)}")
-    print(f"  最新日期: {df['date'].max()}")
+    print(f'  文件: {files[0].name}')
+    print(f'  记录数: {len(df)}')
+    print(f'  最新日期: {df[\"date\"].max()}')
 else:
-    print("  ⚠️  未找到数据文件")
-PYEOF
+    print('  ⚠️  未找到数据文件')
+"
           SSHEOF
           
           echo ""

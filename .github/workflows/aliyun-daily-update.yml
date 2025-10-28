@@ -64,33 +64,15 @@ jobs:
           echo "=========================================="
           echo "  上传原始数据 (daily_parquet)"
           echo "=========================================="
-          
-          FILE_COUNT=$(find data/daily_parquet -name "*.parquet" 2>/dev/null | wc -l)
-          
-          if [ "$FILE_COUNT" -eq 0 ]; then
+          if [ ! -d "data/daily_parquet" ] || [ -z "$(ls -A data/daily_parquet)" ]; then
             echo "ℹ️  没有需要上传的原始数据"
           else
-            echo "📤 准备上传 $FILE_COUNT 个原始数据文件..."
-
-            # --- [ 新增的诊断命令 ] ---
-            echo "--- 开始诊断 ---"
-            echo "1. 检查 rsync 命令路径:"
-            which rsync
-            echo "2. 检查系统 PATH 环境变量:"
-            echo $PATH
-            echo "3. 检查 rsync 文件是否存在:"
-            ls -l /usr/bin/rsync
-            echo "--- 诊断结束 ---"
-            # --- [ 诊断命令结束 ] ---
-            
-            ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} \
-              "mkdir -p /root/lightstock/data/daily_parquet"
-            
-            rsync -avz --progress \
+            echo "📤 准备上传 $(find data/daily_parquet -name "*.parquet" | wc -l) 个原始数据文件..."
+            ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/daily_parquet"
+            /usr/bin/rsync -avz --progress \
               -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
               data/daily_parquet/ \
               root@${{ secrets.SERVER_IP }}:/root/lightstock/data/daily_parquet/
-            
             echo "✅ 原始数据上传完成"
           fi
       
@@ -99,22 +81,15 @@ jobs:
           echo "=========================================="
           echo "  上传复权数据 (adjusted_parquet)"
           echo "=========================================="
-          
-          FILE_COUNT=$(find data/adjusted_parquet -name "*.parquet" 2>/dev/null | wc -l)
-          
-          if [ "$FILE_COUNT" -eq 0 ]; then
+          if [ ! -d "data/adjusted_parquet" ] || [ -z "$(ls -A data/adjusted_parquet)" ]; then
             echo "⚠️  没有复权数据文件"
           else
-            echo "📤 准备上传 $FILE_COUNT 个复权数据文件..."
-            
-            ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} \
-              "mkdir -p /root/lightstock/data/adjusted_parquet"
-            
-            rsync -avz --progress \
+            echo "📤 准备上传 $(find data/adjusted_parquet -name "*.parquet" | wc -l) 个复权数据文件..."
+            ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/adjusted_parquet"
+            /usr/bin/rsync -avz --progress \
               -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
               data/adjusted_parquet/ \
               root@${{ secrets.SERVER_IP }}:/root/lightstock/data/adjusted_parquet/
-            
             echo "✅ 复权数据上传完成"
           fi
       
@@ -123,22 +98,15 @@ jobs:
           echo "=========================================="
           echo "  上传清洗数据 (cleaned_parquet)"
           echo "=========================================="
-          
-          FILE_COUNT=$(find data/cleaned_parquet -name "*.parquet" 2>/dev/null | wc -l)
-          
-          if [ "$FILE_COUNT" -eq 0 ]; then
+          if [ ! -d "data/cleaned_parquet" ] || [ -z "$(ls -A data/cleaned_parquet)" ]; then
             echo "⚠️  没有清洗数据"
           else
-            echo "📤 准备上传 $FILE_COUNT 个清洗文件..."
-            
-            ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} \
-              "mkdir -p /root/lightstock/data/cleaned_parquet"
-            
-            rsync -avz --progress \
+            echo "📤 准备上传 $(find data/cleaned_parquet -name "*.parquet" | wc -l) 个清洗文件..."
+            ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/cleaned_parquet"
+            /usr/bin/rsync -avz --progress \
               -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
               data/cleaned_parquet/ \
               root@${{ secrets.SERVER_IP }}:/root/lightstock/data/cleaned_parquet/
-            
             echo "✅ 清洗数据上传完成"
           fi
       

@@ -3,6 +3,7 @@
 """
 智能股票数据更新脚本 V3.3 - 精简增量版
 去除3天回溯，缺几天补几天
+修正版：不依赖 'type' 列
 """
 
 import baostock as bs
@@ -85,22 +86,46 @@ echo "$latest_file|$file_time"
 
 
 def get_stock_list():
-    """获取所有股票列表"""
+    """获取所有股票列表（修正版：不依赖type列）"""
     print("📋 获取股票列表...")
     lg = bs.login()
     
-    rs = bs.query_all_stock(day=datetime.now().strftime("%Y-%m-%d"))
-    data = []
-    while rs.next():
-        data.append(rs.get_row_data())
-    
-    bs.logout()
-    
-    df = pd.DataFrame(data, columns=rs.fields)
-    stocks = df[df['type'] == '1']['code'].tolist()
-    print(f"✅ 获取到 {len(stocks)} 只股票")
-    
-    return stocks
+    try:
+        rs = bs.query_all_stock(day=datetime.now().strftime("%Y-%m-%d"))
+        data = []
+        while rs.next():
+            data.append(rs.get_row_data())
+        
+        if not data:
+            print("❌ 未获取到任何股票")
+            bs.logout()
+            return []
+        
+        df = pd.DataFrame(data, columns=rs.fields)
+        
+        # 获取所有代码
+        all_codes = df['code'].tolist()
+        
+        # 排除的指数代码
+        exclude_codes = ['000001', '000300', '399001', '399006']
+        
+        stocks = []
+        for code in all_codes:
+            # 提取代码数字部分
+            code_num = code.split('.')[-1]
+            
+            # 必须是6位数字，且不在排除列表中
+            if len(code_num) == 6 and code_num.isdigit() and code_num not in exclude_codes:
+                stocks.append(code)
+        
+        bs.logout()
+        print(f"✅ 获取到 {len(stocks)} 只股票")
+        return stocks
+        
+    except Exception as e:
+        print(f"❌ 获取股票列表失败: {e}")
+        bs.logout()
+        return []
 
 
 def get_index_list():
@@ -234,6 +259,11 @@ def main():
         print("="*50)
         
         stocks = get_stock_list()
+        
+        if not stocks:
+            print("❌ 未获取到股票列表")
+            return
+        
         success_count = 0
         
         for code in tqdm(stocks, desc="下载股票"):
@@ -244,15 +274,19 @@ def main():
                 
                 # 如果文件存在，合并数据
                 if filepath.exists():
-                    old_df = pd.read_parquet(filepath)
-                    df = pd.concat([old_df, df], ignore_index=True)
-                    df.drop_duplicates(subset=['date'], keep='last', inplace=True)
-                    df.sort_values('date', inplace=True)
+                    try:
+                        old_df = pd.read_parquet(filepath)
+                        df = pd.concat([old_df, df], ignore_index=True)
+                        df.drop_duplicates(subset=['date'], keep='last', inplace=True)
+                        df.sort_values('date', inplace=True)
+                    except Exception as e:
+                        # 如果合并失败，直接覆盖
+                        pass
                 
                 df.to_parquet(filepath, index=False)
                 success_count += 1
         
-        print(f"✅ 股票数据下载完成: {success_count}/{len(stocks)}")
+        print(f"\n✅ 股票数据下载完成: {success_count}/{len(stocks)}")
         print()
         
         # 下载指数数据
@@ -270,15 +304,18 @@ def main():
                 
                 # 如果文件存在，合并数据
                 if filepath.exists():
-                    old_df = pd.read_parquet(filepath)
-                    df = pd.concat([old_df, df], ignore_index=True)
-                    df.drop_duplicates(subset=['date'], keep='last', inplace=True)
-                    df.sort_values('date', inplace=True)
+                    try:
+                        old_df = pd.read_parquet(filepath)
+                        df = pd.concat([old_df, df], ignore_index=True)
+                        df.drop_duplicates(subset=['date'], keep='last', inplace=True)
+                        df.sort_values('date', inplace=True)
+                    except Exception as e:
+                        pass
                 
                 df.to_parquet(filepath, index=False)
                 print(f"  ✅ {filename}")
         
-        print("✅ 指数数据下载完成")
+        print("\n✅ 指数数据下载完成")
         print()
         
         # 统计
@@ -289,9 +326,12 @@ def main():
         print(f"总文件数: {total_files}")
         print(f"输出目录: {output_dir.absolute()}")
         
+    except Exception as e:
+        print(f"\n❌ 下载过程出错: {e}")
+        
     finally:
         bs.logout()
-        print("\n✅ 已登出baostock")
+        print("\n✅ 已登出baostack")
 
 
 if __name__ == "__main__":

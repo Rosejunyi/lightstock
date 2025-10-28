@@ -1,4 +1,4 @@
-name: Daily-aliyun-StockData-V3-Complete
+name: Daily-Aliyun-StockData-V3.3
 
 on:
   schedule:
@@ -34,8 +34,11 @@ jobs:
         run: |
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} "echo '✅ SSH连接成功'; hostname"
       
-      - name: 智能更新原始数据 (V3.1)
+      - name: 智能更新原始数据 (V3.3 精简版)
         run: |
+          echo "=========================================="
+          echo "  开始智能更新原始数据"
+          echo "=========================================="
           python scripts/download_data_smart.py
         env:
           SERVER_IP: ${{ secrets.SERVER_IP }}
@@ -48,13 +51,19 @@ jobs:
           echo "=========================================="
           python scripts/download_processeddata.py
       
+      - name: 清洗复权数据 ⭐
+        run: |
+          echo "=========================================="
+          echo "  开始清洗复权数据"
+          echo "=========================================="
+          python scripts/clean_adjusted_for_workflow.py
+      
       - name: 上传原始数据到阿里云
         run: |
           echo "=========================================="
           echo "  上传原始数据 (daily_parquet)"
           echo "=========================================="
           
-          # 统计文件数
           FILE_COUNT=$(find data/daily_parquet -name "*.parquet" 2>/dev/null | wc -l)
           
           if [ "$FILE_COUNT" -eq 0 ]; then
@@ -62,11 +71,9 @@ jobs:
           else
             echo "📤 准备上传 $FILE_COUNT 个原始数据文件..."
             
-            # 确保服务器目录存在
-            ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} \
+            ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} \
               "mkdir -p /root/lightstock/data/daily_parquet"
             
-            # 使用rsync上传，跳过相同文件
             rsync -avz --progress \
               -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
               data/daily_parquet/ \
@@ -81,7 +88,6 @@ jobs:
           echo "  上传复权数据 (adjusted_parquet)"
           echo "=========================================="
           
-          # 统计文件数
           FILE_COUNT=$(find data/adjusted_parquet -name "*.parquet" 2>/dev/null | wc -l)
           
           if [ "$FILE_COUNT" -eq 0 ]; then
@@ -89,11 +95,9 @@ jobs:
           else
             echo "📤 准备上传 $FILE_COUNT 个复权数据文件..."
             
-            # 确保服务器目录存在
-            ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} \
+            ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} \
               "mkdir -p /root/lightstock/data/adjusted_parquet"
             
-            # 使用rsync上传，跳过相同文件
             rsync -avz --progress \
               -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
               data/adjusted_parquet/ \
@@ -102,29 +106,43 @@ jobs:
             echo "✅ 复权数据上传完成"
           fi
       
+      - name: 上传清洗数据到阿里云 ⭐
+        run: |
+          echo "=========================================="
+          echo "  上传清洗数据 (cleaned_parquet)"
+          echo "=========================================="
+          
+          FILE_COUNT=$(find data/cleaned_parquet -name "*.parquet" 2>/dev/null | wc -l)
+          
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "⚠️  没有清洗数据"
+          else
+            echo "📤 准备上传 $FILE_COUNT 个清洗文件..."
+            
+            ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} \
+              "mkdir -p /root/lightstock/data/cleaned_parquet"
+            
+            rsync -avz --progress \
+              -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/cleaned_parquet/ \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/cleaned_parquet/
+            
+            echo "✅ 清洗数据上传完成"
+          fi
+      
       - name: 验证数据完整性
         run: |
           echo "=========================================="
           echo "  验证阿里云服务器数据"
           echo "=========================================="
           
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} << 'EOF'
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} << 'EOF'
             cd /root/lightstock/data
             
             echo "📊 原始数据 (daily_parquet):"
             if [ -d "daily_parquet" ]; then
               DAILY_COUNT=$(find daily_parquet -name "*.parquet" | wc -l)
               echo "  文件数: $DAILY_COUNT"
-              
-              # 显示指数文件
-              echo "  指数文件:"
-              for idx in sh.000001 sh.000300 sz.399001 sz.399006; do
-                if [ -f "daily_parquet/${idx}.parquet" ]; then
-                  echo "    ✅ ${idx}.parquet"
-                else
-                  echo "    ❌ ${idx}.parquet 缺失"
-                fi
-              done
             else
               echo "  ❌ 目录不存在"
             fi
@@ -134,19 +152,26 @@ jobs:
             if [ -d "adjusted_parquet" ]; then
               ADJUSTED_COUNT=$(find adjusted_parquet -name "*.parquet" | wc -l)
               echo "  文件数: $ADJUSTED_COUNT"
+            else
+              echo "  ❌ 目录不存在"
+            fi
+            
+            echo ""
+            echo "🧹 清洗数据 (cleaned_parquet):"
+            if [ -d "cleaned_parquet" ]; then
+              CLEANED_COUNT=$(find cleaned_parquet -name "*.parquet" | wc -l)
+              echo "  文件数: $CLEANED_COUNT"
               
-              # 显示指数文件
-              echo "  指数文件:"
-              for idx in sh.000001 sh.000300 sz.399001 sz.399006; do
-                if [ -f "adjusted_parquet/${idx}.parquet" ]; then
-                  echo "    ✅ ${idx}.parquet"
-                else
-                  echo "    ❌ ${idx}.parquet 缺失"
-                fi
-              done
+              # 显示最新文件的修改时间
+              LATEST_FILE=$(ls -t cleaned_parquet/*.parquet 2>/dev/null | head -1)
+              if [ -n "$LATEST_FILE" ]; then
+                echo "  最新文件: $(basename $LATEST_FILE)"
+                echo "  修改时间: $(stat -c %y "$LATEST_FILE" 2>/dev/null | cut -d'.' -f1)"
+              fi
             else
               echo "  ❌ 目录不存在"
             fi
             
             echo ""
             echo "✅ 验证完成!"
+EOF

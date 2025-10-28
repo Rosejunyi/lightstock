@@ -136,42 +136,17 @@ jobs:
           echo "  验证阿里云服务器数据"
           echo "=========================================="
           
-          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} << 'EOF'
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} '
             cd /root/lightstock/data
             
-            echo "📊 原始数据 (daily_parquet):"
-            if [ -d "daily_parquet" ]; then
-              DAILY_COUNT=$(find daily_parquet -name "*.parquet" | wc -l)
-              echo "  文件数: $DAILY_COUNT"
-            else
-              echo "  ❌ 目录不存在"
-            fi
+            echo "📊 原始数据:"
+            [ -d "daily_parquet" ] && echo "  文件数: $(ls daily_parquet/*.parquet 2>/dev/null | wc -l)" || echo "  ❌ 目录不存在"
             
-            echo ""
-            echo "📈 复权数据 (adjusted_parquet):"
-            if [ -d "adjusted_parquet" ]; then
-              ADJUSTED_COUNT=$(find adjusted_parquet -name "*.parquet" | wc -l)
-              echo "  文件数: $ADJUSTED_COUNT"
-            else
-              echo "  ❌ 目录不存在"
-            fi
+            echo "📈 复权数据:"
+            [ -d "adjusted_parquet" ] && echo "  文件数: $(ls adjusted_parquet/*.parquet 2>/dev/null | wc -l)" || echo "  ❌ 目录不存在"
             
-            echo ""
-            echo "🧹 清洗数据 (cleaned_parquet):"
-            if [ -d "cleaned_parquet" ]; then
-              CLEANED_COUNT=$(find cleaned_parquet -name "*.parquet" | wc -l)
-              echo "  文件数: $CLEANED_COUNT"
-              
-              # 显示最新文件的修改时间
-              LATEST_FILE=$(ls -t cleaned_parquet/*.parquet 2>/dev/null | head -1)
-              if [ -n "$LATEST_FILE" ]; then
-                echo "  最新文件: $(basename $LATEST_FILE)"
-                echo "  修改时间: $(stat -c %y "$LATEST_FILE" 2>/dev/null | cut -d'.' -f1)"
-              fi
-            else
-              echo "  ❌ 目录不存在"
-            fi
+            echo "🧹 清洗数据:"
+            [ -d "cleaned_parquet" ] && echo "  文件数: $(ls cleaned_parquet/*.parquet 2>/dev/null | wc -l)" || echo "  ❌ 目录不存在"
             
-            echo ""
             echo "✅ 验证完成!"
-EOF
+          '

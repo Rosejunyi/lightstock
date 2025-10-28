@@ -353,6 +353,11 @@ def main():
         
         stocks = get_stock_list()
         
+        # --- [ 调试开关：只取前5只股票用于快速测试 ] ---
+        stocks = stocks[:5] 
+        print(f"⚠️ [调试模式] 已激活，仅处理 {len(stocks)} 只股票: {stocks}")
+        # --
+        
         if not stocks or len(stocks) == 0:
             print("❌ 未获取到股票列表，程序终止")
             return

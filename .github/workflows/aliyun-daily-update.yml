@@ -71,6 +71,17 @@ jobs:
             echo "ℹ️  没有需要上传的原始数据"
           else
             echo "📤 准备上传 $FILE_COUNT 个原始数据文件..."
+
+            # --- [ 新增的诊断命令 ] ---
+            echo "--- 开始诊断 ---"
+            echo "1. 检查 rsync 命令路径:"
+            which rsync
+            echo "2. 检查系统 PATH 环境变量:"
+            echo $PATH
+            echo "3. 检查 rsync 文件是否存在:"
+            ls -l /usr/bin/rsync
+            echo "--- 诊断结束 ---"
+            # --- [ 诊断命令结束 ] ---
             
             ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} \
               "mkdir -p /root/lightstock/data/daily_parquet"

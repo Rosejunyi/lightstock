@@ -1,0 +1,38 @@
+name: Test-SSH-Upload
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 配置环境
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync
+          
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+      
+      - name: 测试SSH
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "echo 'SSH OK'; ls -la"
+      
+      - name: 创建测试文件
+        run: |
+          mkdir -p test_data
+          echo "test" > test_data/test.txt
+      
+      - name: 测试 rsync 上传
+        run: |
+          rsync -avz -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+            test_data/ \
+            root@${{ secrets.SERVER_IP }}:/root/test_upload/
+      
+      - name: 验证上传
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} \
+            "ls -la /root/test_upload/"

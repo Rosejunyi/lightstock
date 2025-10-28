@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-智能股票数据更新脚本 V3.3 - 精简增量版
-去除3天回溯，缺几天补几天
-修正版：不依赖 'type' 列
+智能股票数据更新脚本 V3.3 - 完整修正版
+- 修正增量更新逻辑（去除3天回溯）
+- 修正股票列表获取（增强调试）
 """
 
 import baostock as bs
@@ -85,37 +85,138 @@ echo "$latest_file|$file_time"
         return None
 
 
-https://github.com/Rosejunyi/lightstock/actions/runs/18864529507/job/53829559597
+def get_stock_list():
+    """获取所有股票列表（增强调试版）"""
+    print("📋 获取股票列表...")
+    
+    try:
+        # 获取当前日期
+        today = datetime.now().strftime("%Y-%m-%d")
+        print(f"查询日期: {today}")
         
+        # 查询所有股票
+        rs = bs.query_all_stock(day=today)
+        
+        # 检查查询结果
+        if rs.error_code != '0':
+            print(f"❌ query_all_stock 查询失败")
+            print(f"   错误码: {rs.error_code}")
+            print(f"   错误信息: {rs.error_msg}")
+            print("\n尝试使用备用方法...")
+            return get_stock_list_fallback()
+        
+        # 获取数据
+        data = []
+        count = 0
+        while (rs.error_code == '0') and rs.next():
+            data.append(rs.get_row_data())
+            count += 1
+        
+        print(f"📊 从baostock获取到 {len(data)} 条记录（循环 {count} 次）")
+        
+        if len(data) < 100:
+            print(f"⚠️ 获取的记录数太少（{len(data)}条），使用备用方法")
+            return get_stock_list_fallback()
+        
+        # 创建DataFrame
         df = pd.DataFrame(data, columns=rs.fields)
         
-        # 直接获取所有代码，不过滤
-        all_codes = df['code'].tolist()
+        # 打印调试信息
+        print(f"📋 列名: {list(df.columns)}")
+        print(f"📋 数据示例（前3行）:")
+        print(df.head(3))
         
-        # 只排除明确的指数
-        exclude_list = [
-            'sh.000001',  # 上证指数
-            'sh.000300',  # 沪深300
-            'sz.399001',  # 深证成指
-            'sz.399006',  # 创业板指
-            'sz.399005',  # 中小板指
-            'sz.399300',  # 沪深300
-        ]
+        # 检查是否有 type 列
+        if 'type' in df.columns:
+            print("✅ 找到 'type' 列")
+            # 打印 type 列的唯一值
+            print(f"   type 列的唯一值: {df['type'].unique()}")
+            
+            # 1 = 股票, 2 = 指数
+            stocks = df[df['type'] == '1']['code'].tolist()
+            print(f"✅ 使用 type 过滤，获取到 {len(stocks)} 只股票")
+        else:
+            print("⚠️ 没有 'type' 列，使用代码格式过滤")
+            stocks = filter_stocks_by_code(df)
         
-        stocks = [code for code in all_codes if code not in exclude_list]
-        
-        bs.logout()
-        print(f"✅ 获取到 {len(stocks)} 只股票/其他证券")
-        print(f"📋 示例: {stocks[:10]}")
-        
-        return stocks
+        if stocks and len(stocks) > 0:
+            print(f"📋 示例股票代码（前10个）: {stocks[:10]}")
+            return stocks
+        else:
+            print("❌ 过滤后没有股票，使用备用方法")
+            return get_stock_list_fallback()
         
     except Exception as e:
-        print(f"❌ 异常: {e}")
+        print(f"❌ 获取股票列表异常: {e}")
         import traceback
         traceback.print_exc()
-        bs.logout()
-        return []
+        print("\n尝试使用备用方法...")
+        return get_stock_list_fallback()
+
+
+def filter_stocks_by_code(df):
+    """通过代码格式过滤股票"""
+    all_codes = df['code'].tolist()
+    
+    # 排除已知指数
+    exclude_list = [
+        'sh.000001', 'sh.000300', 
+        'sz.399001', 'sz.399006', 'sz.399005', 'sz.399300'
+    ]
+    
+    stocks = []
+    for code in all_codes:
+        if code in exclude_list:
+            continue
+        
+        # 提取代码数字部分
+        code_num = code.split('.')[-1]
+        
+        # 股票代码必须是6位数字，且不以399开头（深证指数）
+        if len(code_num) == 6 and code_num.isdigit():
+            if not code_num.startswith('399'):
+                stocks.append(code)
+    
+    print(f"✅ 代码格式过滤，获取到 {len(stocks)} 只股票")
+    return stocks
+
+
+def get_stock_list_fallback():
+    """备用方法：生成股票代码范围"""
+    print("📋 使用备用方法：生成股票代码...")
+    
+    stocks = []
+    
+    # 沪市A股：600000-605000, 601000-605000（常见范围）
+    print("  生成沪市A股...")
+    for prefix in ['600', '601', '603', '605']:
+        for i in range(1000):
+            stocks.append(f"sh.{prefix}{i:03d}")
+    
+    # 深市主板：000002-000999（排除000001指数）
+    print("  生成深市主板...")
+    for i in range(2, 1000):
+        stocks.append(f"sz.{i:06d}")
+    
+    # 中小板：002000-002999
+    print("  生成中小板...")
+    for i in range(2000, 3000):
+        stocks.append(f"sz.{i:06d}")
+    
+    # 创业板：300000-300999
+    print("  生成创业板...")
+    for i in range(300000, 301000):
+        stocks.append(f"sz.{i}")
+    
+    # 科创板：688000-688999
+    print("  生成科创板...")
+    for i in range(688000, 689000):
+        stocks.append(f"sh.{i}")
+    
+    print(f"✅ 备用方法生成了 {len(stocks)} 个代码")
+    print(f"📋 示例: {stocks[:10]}")
+    
+    return stocks
 
 
 def get_index_list():
@@ -138,7 +239,7 @@ def download_stock_data(code, start_date, end_date):
         )
         
         data = []
-        while rs.next():
+        while (rs.error_code == '0') and rs.next():
             data.append(rs.get_row_data())
         
         if not data:
@@ -165,7 +266,7 @@ def download_index_data(code, start_date, end_date):
         )
         
         data = []
-        while rs.next():
+        while (rs.error_code == '0') and rs.next():
             data.append(rs.get_row_data())
         
         if not data:
@@ -195,6 +296,7 @@ def main():
     print("  ✅ 股票文件: 纯数字命名 (如 000001.parquet)")
     print("  ✅ 指数文件: 完整格式 (如 sh.000001.parquet)")
     print("  ✅ 增量更新: 缺几天补几天，不回溯")
+    print("  ✅ 增强调试: 详细日志输出")
     print()
     
     # 检查服务器数据状态
@@ -247,14 +349,19 @@ def main():
         print("="*50)
         print("📊 开始下载股票数据")
         print("="*50)
+        print()
         
         stocks = get_stock_list()
         
-        if not stocks:
-            print("❌ 未获取到股票列表")
+        if not stocks or len(stocks) == 0:
+            print("❌ 未获取到股票列表，程序终止")
             return
         
+        print(f"\n开始下载 {len(stocks)} 只股票...")
+        print()
+        
         success_count = 0
+        skip_count = 0
         
         for code in tqdm(stocks, desc="下载股票"):
             result = download_stock_data(code, start_date, end_date)
@@ -269,20 +376,24 @@ def main():
                         df = pd.concat([old_df, df], ignore_index=True)
                         df.drop_duplicates(subset=['date'], keep='last', inplace=True)
                         df.sort_values('date', inplace=True)
-                    except Exception as e:
-                        # 如果合并失败，直接覆盖
+                    except:
                         pass
                 
                 df.to_parquet(filepath, index=False)
                 success_count += 1
+            else:
+                skip_count += 1
         
-        print(f"\n✅ 股票数据下载完成: {success_count}/{len(stocks)}")
+        print(f"\n✅ 股票数据下载完成:")
+        print(f"   成功: {success_count}")
+        print(f"   跳过: {skip_count}")
         print()
         
         # 下载指数数据
         print("="*50)
         print("📈 开始下载指数数据")
         print("="*50)
+        print()
         
         indexes = get_index_list()
         
@@ -299,7 +410,7 @@ def main():
                         df = pd.concat([old_df, df], ignore_index=True)
                         df.drop_duplicates(subset=['date'], keep='last', inplace=True)
                         df.sort_values('date', inplace=True)
-                    except Exception as e:
+                    except:
                         pass
                 
                 df.to_parquet(filepath, index=False)
@@ -318,10 +429,12 @@ def main():
         
     except Exception as e:
         print(f"\n❌ 下载过程出错: {e}")
+        import traceback
+        traceback.print_exc()
         
     finally:
         bs.logout()
-        print("\n✅ 已登出baostack")
+        print("\n✅ 已登出baostock")
 
 
 if __name__ == "__main__":

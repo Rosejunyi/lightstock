@@ -86,44 +86,60 @@ echo "$latest_file|$file_time"
 
 
 def get_stock_list():
-    """获取所有股票列表（修正版：不依赖type列）"""
+    """获取所有股票列表（简化版）"""
     print("📋 获取股票列表...")
+    
     lg = bs.login()
+    if lg.error_code != '0':
+        print(f"❌ 登录失败: {lg.error_msg}")
+        return []
     
     try:
         rs = bs.query_all_stock(day=datetime.now().strftime("%Y-%m-%d"))
+        
+        if rs.error_code != '0':
+            print(f"❌ 查询失败: {rs.error_msg}")
+            bs.logout()
+            return []
+        
         data = []
         while rs.next():
             data.append(rs.get_row_data())
         
+        print(f"📊 从baostock获取到 {len(data)} 条记录")
+        
         if not data:
-            print("❌ 未获取到任何股票")
+            print("❌ 未获取到任何数据")
             bs.logout()
             return []
         
         df = pd.DataFrame(data, columns=rs.fields)
         
-        # 获取所有代码
+        # 直接获取所有代码，不过滤
         all_codes = df['code'].tolist()
         
-        # 排除的指数代码
-        exclude_codes = ['000001', '000300', '399001', '399006']
+        # 只排除明确的指数
+        exclude_list = [
+            'sh.000001',  # 上证指数
+            'sh.000300',  # 沪深300
+            'sz.399001',  # 深证成指
+            'sz.399006',  # 创业板指
+            'sz.399005',  # 中小板指
+            'sz.399300',  # 沪深300
+        ]
         
-        stocks = []
-        for code in all_codes:
-            # 提取代码数字部分
-            code_num = code.split('.')[-1]
-            
-            # 必须是6位数字，且不在排除列表中
-            if len(code_num) == 6 and code_num.isdigit() and code_num not in exclude_codes:
-                stocks.append(code)
+        stocks = [code for code in all_codes if code not in exclude_list]
         
         bs.logout()
-        print(f"✅ 获取到 {len(stocks)} 只股票")
+        print(f"✅ 获取到 {len(stocks)} 只股票/其他证券")
+        print(f"📋 示例: {stocks[:10]}")
+        
         return stocks
         
     except Exception as e:
-        print(f"❌ 获取股票列表失败: {e}")
+        print(f"❌ 异常: {e}")
+        import traceback
+        traceback.print_exc()
         bs.logout()
         return []
 

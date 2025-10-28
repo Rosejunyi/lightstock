@@ -1,4 +1,4 @@
-name: Daily-Aliyun-StockData-V3.3
+name: Daily-Aliyun-StockData-V3.3-Fixed
 
 on:
   schedule:
@@ -23,19 +23,27 @@ jobs:
         run: |
           pip install baostock pandas pyarrow tqdm
       
-      - name: 配置SSH密钥
+      - name: 配置SSH密钥和rsync
         run: |
-          sudo apt-get update && sudo apt-get install -y rsync
+          # 安装 rsync
+          sudo apt-get update
+          sudo apt-get install -y rsync
+          
+          # 配置 SSH
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+          
+          # 验证 rsync 安装
+          which rsync
+          rsync --version
       
       - name: 测试SSH连接
         run: |
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} "echo '✅ SSH连接成功'; hostname"
       
-      - name: 智能更新原始数据 (V3.3 精简版)
+      - name: 智能更新原始数据
         run: |
           echo "=========================================="
           echo "  开始智能更新原始数据"
@@ -52,7 +60,7 @@ jobs:
           echo "=========================================="
           python scripts/download_processeddata.py
       
-      - name: 清洗复权数据 ⭐
+      - name: 清洗复权数据
         run: |
           echo "=========================================="
           echo "  开始清洗复权数据"
@@ -64,69 +72,32 @@ jobs:
           echo "=========================================="
           echo "  上传原始数据 (daily_parquet)"
           echo "=========================================="
-          if [ ! -d "data/daily_parquet" ] || [ -z "$(ls -A data/daily_parquet)" ]; then
-            echo "ℹ️  没有需要上传的原始数据"
+          
+          if [ ! -d "data/daily_parquet" ]; then
+            echo "❌ daily_parquet 目录不存在"
+            exit 1
+          fi
+          
+          FILE_COUNT=$(find data/daily_parquet -name "*.parquet" 2>/dev/null | wc -l)
+          
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "⚠️ 没有需要上传的原始数据"
           else
-            echo "📤 准备上传 $(find data/daily_parquet -name "*.parquet" | wc -l) 个原始数据文件..."
-            ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/daily_parquet"
-            /usr/bin/rsync -avz --progress \
+            echo "📤 准备上传 $FILE_COUNT 个原始数据文件..."
+            
+            # 确保服务器目录存在
+            ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} \
+              "mkdir -p /root/lightstock/data/daily_parquet"
+            
+            # 使用 rsync 上传（注意：使用 rsync 不带路径）
+            rsync -avz --progress \
               -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
               data/daily_parquet/ \
               root@${{ secrets.SERVER_IP }}:/root/lightstock/data/daily_parquet/
+            
             echo "✅ 原始数据上传完成"
           fi
       
       - name: 上传复权数据到阿里云
         run: |
-          echo "=========================================="
-          echo "  上传复权数据 (adjusted_parquet)"
-          echo "=========================================="
-          if [ ! -d "data/adjusted_parquet" ] || [ -z "$(ls -A data/adjusted_parquet)" ]; then
-            echo "⚠️  没有复权数据文件"
-          else
-            echo "📤 准备上传 $(find data/adjusted_parquet -name "*.parquet" | wc -l) 个复权数据文件..."
-            ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/adjusted_parquet"
-            /usr/bin/rsync -avz --progress \
-              -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-              data/adjusted_parquet/ \
-              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/adjusted_parquet/
-            echo "✅ 复权数据上传完成"
-          fi
-      
-      - name: 上传清洗数据到阿里云 ⭐
-        run: |
-          echo "=========================================="
-          echo "  上传清洗数据 (cleaned_parquet)"
-          echo "=========================================="
-          if [ ! -d "data/cleaned_parquet" ] || [ -z "$(ls -A data/cleaned_parquet)" ]; then
-            echo "⚠️  没有清洗数据"
-          else
-            echo "📤 准备上传 $(find data/cleaned_parquet -name "*.parquet" | wc -l) 个清洗文件..."
-            ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/cleaned_parquet"
-            /usr/bin/rsync -avz --progress \
-              -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-              data/cleaned_parquet/ \
-              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/cleaned_parquet/
-            echo "✅ 清洗数据上传完成"
-          fi
-      
-      - name: 验证数据完整性
-        run: |
-          echo "=========================================="
-          echo "  验证阿里云服务器数据"
-          echo "=========================================="
-          
-          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} '
-            cd /root/lightstock/data
-            
-            echo "📊 原始数据:"
-            [ -d "daily_parquet" ] && echo "  文件数: $(ls daily_parquet/*.parquet 2>/dev/null | wc -l)" || echo "  ❌ 目录不存在"
-            
-            echo "📈 复权数据:"
-            [ -d "adjusted_parquet" ] && echo "  文件数: $(ls adjusted_parquet/*.parquet 2>/dev/null | wc -l)" || echo "  ❌ 目录不存在"
-            
-            echo "🧹 清洗数据:"
-            [ -d "cleaned_parquet" ] && echo "  文件数: $(ls cleaned_parquet/*.parquet 2>/dev/null | wc -l)" || echo "  ❌ 目录不存在"
-            
-            echo "✅ 验证完成!"
-          '
+          echo "=========

@@ -86,32 +86,87 @@ echo "$latest_file|$file_time"
 
 
 def get_stock_list():
-    """获取所有股票列表（简化版）"""
+    """获取所有股票列表（增强调试版）"""
     print("📋 获取股票列表...")
     
-    lg = bs.login()
-    if lg.error_code != '0':
-        print(f"❌ 登录失败: {lg.error_msg}")
-        return []
+    # 注意：这里已经在 main() 中登录过了，不需要再次登录
+    # 如果在这里单独调用，需要先登录
     
     try:
-        rs = bs.query_all_stock(day=datetime.now().strftime("%Y-%m-%d"))
+        # 获取当前日期
+        today = datetime.now().strftime("%Y-%m-%d")
+        print(f"查询日期: {today}")
         
+        rs = bs.query_all_stock(day=today)
+        
+        # 检查查询结果
         if rs.error_code != '0':
-            print(f"❌ 查询失败: {rs.error_msg}")
-            bs.logout()
+            print(f"❌ 查询失败，错误码: {rs.error_code}")
+            print(f"❌ 错误信息: {rs.error_msg}")
             return []
         
+        # 获取数据
         data = []
-        while rs.next():
+        while (rs.error_code == '0') and rs.next():
             data.append(rs.get_row_data())
         
         print(f"📊 从baostock获取到 {len(data)} 条记录")
         
         if not data:
             print("❌ 未获取到任何数据")
-            bs.logout()
             return []
+        
+        # 创建DataFrame
+        df = pd.DataFrame(data, columns=rs.fields)
+        
+        # 打印调试信息
+        print(f"📋 列名: {list(df.columns)}")
+        print(f"📋 数据示例（前3行）:")
+        print(df.head(3))
+        
+        # 检查是否有 type 列
+        if 'type' in df.columns:
+            print("✅ 找到 'type' 列，使用 type 过滤")
+            # 1 表示股票，2 表示指数
+            stocks = df[df['type'] == '1']['code'].tolist()
+            print(f"✅ 过滤后获取到 {len(stocks)} 只股票")
+        else:
+            print("⚠️ 没有 'type' 列，使用代码格式过滤")
+            # 使用代码格式过滤
+            all_codes = df['code'].tolist()
+            
+            # 排除已知指数
+            exclude_list = [
+                'sh.000001', 'sh.000300', 
+                'sz.399001', 'sz.399006', 'sz.399005', 'sz.399300'
+            ]
+            
+            stocks = []
+            for code in all_codes:
+                if code in exclude_list:
+                    continue
+                
+                # 提取代码数字部分
+                code_num = code.split('.')[-1]
+                
+                # 股票代码必须是6位数字，且不以399开头（深证指数）
+                if len(code_num) == 6 and code_num.isdigit() and not code_num.startswith('399'):
+                    stocks.append(code)
+            
+            print(f"✅ 过滤后获取到 {len(stocks)} 只股票")
+        
+        if stocks:
+            print(f"📋 示例股票代码: {stocks[:5]}")
+        else:
+            print("❌ 过滤后没有股票")
+        
+        return stocks
+        
+    except Exception as e:
+        print(f"❌ 获取股票列表异常: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
         
         df = pd.DataFrame(data, columns=rs.fields)
         

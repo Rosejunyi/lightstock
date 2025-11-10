@@ -2,7 +2,8 @@ name: Daily-Stock-Data-Pipeline-SMART-SKIP
 
 on:
   schedule:
-    - cron: '30 8 * * 1-5'
+    # 改为 UTC 9:30 = 北京时间 17:30（确保数据已更新）
+    - cron: '30 9 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -42,25 +43,71 @@ jobs:
           from datetime import datetime
           import sys
           
-          # 获取今天是星期几（0=周一, 6=周日）
+          # 获取当前时间（GitHub Actions 使用 UTC，需要转换为北京时间 UTC+8）
+          # 注意：GitHub Actions 运行环境默认是 UTC 时区
+          import os
+          os.environ['TZ'] = 'Asia/Shanghai'
+          
+          # 如果系统支持 tzset，调用它来应用时区设置
+          try:
+              import time
+              time.tzset()
+          except:
+              pass
+          
           today = datetime.now()
           weekday = today.weekday()
+          current_hour = today.hour
+          current_minute = today.minute
+          current_time_minutes = current_hour * 60 + current_minute
           
-          print(f"📅 今天: {today.strftime('%Y-%m-%d')} ({['周一','周二','周三','周四','周五','周六','周日'][weekday]})")
+          # 股市数据更新时间：16:30 = 990分钟
+          data_ready_time = 16 * 60 + 30  # 16:30
           
-          # 判断是否是交易日
+          print(f"📅 今天: {today.strftime('%Y-%m-%d %H:%M')} ({['周一','周二','周三','周四','周五','周六','周日'][weekday]})")
+          print(f"⏰ 当前时间: {today.strftime('%H:%M')} (北京时间)")
+          print(f"🕐 数据就绪时间: 16:30")
+          print()
+          
+          should_skip = False
+          skip_reason = ""
+          
+          # 判断1：是否是周末
           if weekday >= 5:  # 周六或周日
-              print("⏭️  今天是周末（非交易日），数据应该已是上周五的")
-              print("跳过所有下载步骤，避免重复下载")
-              print("skip_download=true")
-              # 设置环境变量
-              with open('$GITHUB_ENV', 'a') as f:
-                  f.write('SKIP_DOWNLOAD=true\n')
+              should_skip = True
+              skip_reason = "今天是周末（非交易日），数据应该已是上周五的"
+              print(f"⏭️  {skip_reason}")
+          
+          # 判断2：是否在数据更新时间之前
+          elif current_time_minutes < data_ready_time:
+              should_skip = True
+              skip_reason = f"当前时间 {today.strftime('%H:%M')} 早于数据更新时间 16:30"
+              print(f"⏭️  {skip_reason}")
+              print()
+              print(f"💡 提示:")
+              print(f"   - 股市交易时间: 09:30-15:00")
+              print(f"   - 数据更新时间: 通常在 16:30-17:00 之后")
+              print(f"   - 当前 cron: '30 8 * * 1-5' (UTC) = 北京时间 16:30")
+              print(f"   - 建议 cron: '30 9 * * 1-5' (UTC) = 北京时间 17:30")
+          
           else:
-              print("✅ 今天是工作日，可能需要更新数据")
-              print("skip_download=false")
-              with open('$GITHUB_ENV', 'a') as f:
+              print("✅ 今天是工作日，且已过数据更新时间")
+              print("📥 可以开始下载最新数据")
+          
+          print()
+          
+          # 写入环境变量
+          if should_skip:
+              print(f"🚫 结论: 跳过所有下载步骤")
+              print(f"📋 原因: {skip_reason}")
+              with open(os.environ['GITHUB_ENV'], 'a') as f:
+                  f.write('SKIP_DOWNLOAD=true\n')
+                  f.write(f'SKIP_REASON={skip_reason}\n')
+          else:
+              print(f"✅ 结论: 执行数据下载")
+              with open(os.environ['GITHUB_ENV'], 'a') as f:
                   f.write('SKIP_DOWNLOAD=false\n')
+                  f.write('SKIP_REASON=正常执行\n')
           PYTHON_SCRIPT
 
       - name: 显示跳过状态
@@ -69,18 +116,33 @@ jobs:
           echo "智能跳过检查结果"
           echo "=========================================="
           echo "SKIP_DOWNLOAD = ${{ env.SKIP_DOWNLOAD }}"
+          echo "SKIP_REASON = ${{ env.SKIP_REASON }}"
+          echo ""
           
           if [ "${{ env.SKIP_DOWNLOAD }}" = "true" ]; then
-            echo ""
-            echo "⏭️  今天是周末，数据已是最新"
-            echo "将跳过所有下载步骤"
+            echo "⏭️  跳过原因: ${{ env.SKIP_REASON }}"
             echo ""
             echo "💡 提示："
-            echo "  - 如果需要强制更新，请手动触发workflow并修改检查逻辑"
-            echo "  - 或者在工作日运行此workflow"
-          else
+            echo "  - 周末：数据已是上周五的，无需重复下载"
+            echo "  - 交易日早于16:30：数据尚未更新完成"
+            echo "  - 如需强制更新：手动触发 workflow_dispatch"
             echo ""
+            echo "⏰ 建议执行时间："
+            echo "  - cron: '30 9 * * 1-5' (UTC)"
+            echo "  - 相当于北京时间 17:30"
+          else
             echo "✅ 开始执行数据更新"
+            echo ""
+            echo "📊 执行步骤："
+            echo "  S1: 下载个股K线数据"
+            echo "  S2: 下载复权数据"
+            echo "  S3: 下载大盘指数"
+            echo "  S4: 计算技术指标"
+            echo "  S5: 生成每日快照"
+            echo "  S6: 强势股筛选"
+            echo "  S7: 市场聚合数据"
+            echo "  S8: 冷热分离"
+            echo "  S9: 股票基本信息（周一）"
           fi
           echo "=========================================="
 
@@ -296,12 +358,19 @@ jobs:
           echo ""
           
           if [ "${{ env.SKIP_DOWNLOAD }}" = "true" ]; then
-            echo "⏭️  所有下载步骤已跳过（今天是周末）"
+            echo "⏭️  所有下载步骤已跳过"
+            echo "📋 跳过原因: ${{ env.SKIP_REASON }}"
             echo ""
             echo "💡 数据状态:"
-            echo "  - 所有数据应该已是上周五的"
-            echo "  - 无需重复下载"
-            echo "  - 如需强制更新，请在工作日手动触发"
+            if [[ "${{ env.SKIP_REASON }}" == *"周末"* ]]; then
+              echo "  - 今天是周末，数据已是上周五的"
+              echo "  - 无需重复下载"
+            else
+              echo "  - 当前时间早于数据更新时间（16:30）"
+              echo "  - 建议等到 17:30 之后再执行"
+              echo "  - 或修改 cron 为 '30 9 * * 1-5' (UTC)"
+            fi
+            echo "  - 如需强制更新，请手动触发 workflow_dispatch"
           else
             echo "各步骤执行状态："
             echo "  S1 (个股K线): ${{ steps.step_s1.outcome }}"
@@ -317,17 +386,21 @@ jobs:
             # 统计
             SUCCESS=0
             FAIL=0
+            SKIP=0
             
             for outcome in "${{ steps.step_s1.outcome }}" "${{ steps.step_s2.outcome }}" "${{ steps.step_s3.outcome }}" "${{ steps.step_s4.outcome }}" "${{ steps.step_s5.outcome }}" "${{ steps.step_s6.outcome }}" "${{ steps.step_s7.outcome }}" "${{ steps.step_s8.outcome }}" "${{ steps.step_s9.outcome }}"; do
               if [ "$outcome" = "success" ]; then
                 SUCCESS=$((SUCCESS + 1))
               elif [ "$outcome" = "failure" ]; then
                 FAIL=$((FAIL + 1))
+              elif [ "$outcome" = "skipped" ]; then
+                SKIP=$((SKIP + 1))
               fi
             done
             
             echo ""
             echo "✅ 成功: $SUCCESS 个步骤"
             echo "❌ 失败: $FAIL 个步骤"
+            echo "⏭️  跳过: $SKIP 个步骤"
           fi
           echo "=========================================="

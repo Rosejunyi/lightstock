@@ -1,0 +1,276 @@
+name: Daily-Stock-Data-Pipeline-S1-S9
+
+on:
+  schedule:
+    - cron: '30 8 * * 1-5'  # 北京时间 16:30（UTC+8），工作日执行
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  stock-data-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout 代码
+        uses: actions/checkout@v3
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: 安装依赖
+        run: |
+          pip install baostock pandas pyarrow tqdm numpy ta-lib scikit-learn
+
+      - name: 配置 SSH 和 rsync
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+
+      - name: 测试 SSH 连接
+        run: |
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} "echo '✅ SSH 连接成功'"
+
+      # ========================================
+      # S1: 下载个股 K 线数据（不复权）
+      # ========================================
+      - name: S1 - 下载个股K线数据（增量）
+        run: |
+          echo "=========================================="
+          echo "  S1: 下载个股K线数据（不复权，增量）"
+          echo "=========================================="
+          python scripts/S1_20251103_download_kline_个股增量.py
+
+      # ========================================
+      # S2: 下载复权数据（前复权+后复权）
+      # ========================================
+      - name: S2 - 下载复权数据（增量）
+        run: |
+          echo "=========================================="
+          echo "  S2: 下载复权数据（前复权+后复权，增量）"
+          echo "=========================================="
+          python scripts/S2_20251103_download_adjusted_复权增量.py
+
+      # ========================================
+      # S3: 下载大盘指数数据
+      # ========================================
+      - name: S3 - 下载大盘指数数据（增量）
+        run: |
+          echo "=========================================="
+          echo "  S3: 下载大盘指数数据（增量）"
+          echo "=========================================="
+          python scripts/S3_20251103_download_index_大盘增量.py
+
+      # ========================================
+      # S4: 计算技术指标（个股+大盘）
+      # ========================================
+      - name: S4 - 计算技术指标（全量）
+        run: |
+          echo "=========================================="
+          echo "  S4: 计算个股及大盘技术指标（全量）"
+          echo "=========================================="
+          python scripts/S4_20251102\ calculate_个股及大盘技术全量计算.py
+
+      # ========================================
+      # S5: 生成每日技术快照
+      # ========================================
+      - name: S5 - 生成每日技术快照
+        run: |
+          echo "=========================================="
+          echo "  S5: 生成个股每日技术快照"
+          echo "=========================================="
+          python scripts/S5_20251103_generate_daily_个股每日技术快照.py
+
+      # ========================================
+      # S6: 基础强势股筛选（CANSLIM）
+      # ========================================
+      - name: S6 - 基础强势股筛选
+        run: |
+          echo "=========================================="
+          echo "  S6: 基础强势股筛选（CANSLIM）"
+          echo "=========================================="
+          python scripts/S6_20251103_\ 基础强势股筛选.py
+
+      # ========================================
+      # S7: 生成市场聚合数据
+      # ========================================
+      - name: S7 - 生成市场聚合数据
+        run: |
+          echo "=========================================="
+          echo "  S7: 生成市场聚合数据"
+          echo "=========================================="
+          python scripts/S7_20251103_generate_market市场聚合数据.py
+
+      # ========================================
+      # S8: 技术指标冷热分离
+      # ========================================
+      - name: S8 - 技术指标冷热分离
+        run: |
+          echo "=========================================="
+          echo "  S8: 个股技术数据冷热分离"
+          echo "=========================================="
+          python scripts/S8_20251103_split_hot_cold_个股技术冷热分离.py
+
+      # ========================================
+      # S9: 下载股票基本信息（周更）
+      # ========================================
+      - name: S9 - 下载股票基本信息（周更）
+        run: |
+          echo "=========================================="
+          echo "  S9: 下载股票基本信息（增量，周更）"
+          echo "=========================================="
+          # 只在周一执行
+          if [ $(date +%u) -eq 1 ]; then
+            python scripts/S9_20251102\ download_增量股票基本信息_周更.py
+          else
+            echo "⏭️  今天不是周一，跳过 S9"
+          fi
+
+      # ========================================
+      # 上传数据到阿里云
+      # ========================================
+      - name: 上传 data 目录到阿里云
+        run: |
+          echo "=========================================="
+          echo "  开始上传所有数据到阿里云"
+          echo "=========================================="
+
+          # 在阿里云服务器创建目录结构
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} 'bash -s' << 'ENDSSH'
+            mkdir -p /root/lightstock/data/{daily_kline_raw,daily_parquet_qfq,daily_parquet_hfq,index_data,technical_indicators,technical_indicators_hot,daily_snapshot,canslim_screening,market_aggregates,backups}
+          ENDSSH
+
+          # 上传各个数据目录
+          echo "📤 上传 daily_kline_raw（个股K线-不复权）..."
+          if [ -d "data/daily_kline_raw" ]; then
+            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/daily_kline_raw/ \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/daily_kline_raw/
+          fi
+
+          echo "📤 上传 daily_parquet_qfq（前复权数据）..."
+          if [ -d "data/daily_parquet_qfq" ]; then
+            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/daily_parquet_qfq/ \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/daily_parquet_qfq/
+          fi
+
+          echo "📤 上传 daily_parquet_hfq（后复权数据）..."
+          if [ -d "data/daily_parquet_hfq" ]; then
+            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/daily_parquet_hfq/ \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/daily_parquet_hfq/
+          fi
+
+          echo "📤 上传 index_data（大盘指数数据）..."
+          if [ -d "data/index_data" ]; then
+            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/index_data/ \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/index_data/
+          fi
+
+          echo "📤 上传 technical_indicators（技术指标-完整）..."
+          if [ -d "data/technical_indicators" ]; then
+            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/technical_indicators/ \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/technical_indicators/
+          fi
+
+          echo "📤 上传 technical_indicators_hot（技术指标-热数据）..."
+          if [ -d "data/technical_indicators_hot" ]; then
+            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/technical_indicators_hot/ \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/technical_indicators_hot/
+          fi
+
+          echo "📤 上传 daily_snapshot（每日快照）..."
+          if [ -d "data/daily_snapshot" ]; then
+            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/daily_snapshot/ \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/daily_snapshot/
+          fi
+
+          echo "📤 上传 canslim_screening（CANSLIM筛选结果）..."
+          if [ -d "data/canslim_screening" ]; then
+            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/canslim_screening/ \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/canslim_screening/
+          fi
+
+          echo "📤 上传 market_aggregates（市场聚合数据）..."
+          if [ -d "data/market_aggregates" ]; then
+            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/market_aggregates/ \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/market_aggregates/
+          fi
+
+          echo "📤 上传 stock_basic_info.parquet（股票基本信息）..."
+          if [ -f "data/stock_basic_info.parquet" ]; then
+            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              data/stock_basic_info.parquet \
+              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/
+          fi
+
+          echo "✅ 所有数据上传完成！"
+
+      # ========================================
+      # 验证数据完整性
+      # ========================================
+      - name: 验证阿里云数据完整性
+        run: |
+          echo "=========================================="
+          echo "  验证阿里云服务器数据"
+          echo "=========================================="
+
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} 'bash -s' << 'ENDSSH'
+            cd /root/lightstock/data
+
+            echo "📊 数据目录统计："
+            echo ""
+
+            for dir in daily_kline_raw daily_parquet_qfq daily_parquet_hfq index_data technical_indicators technical_indicators_hot daily_snapshot canslim_screening market_aggregates; do
+              if [ -d "$dir" ]; then
+                count=$(find "$dir" -type f 2>/dev/null | wc -l)
+                size=$(du -sh "$dir" 2>/dev/null | cut -f1)
+                echo "  ✅ $dir: $count 个文件，大小 $size"
+              else
+                echo "  ❌ $dir: 目录不存在"
+              fi
+            done
+
+            echo ""
+            if [ -f "stock_basic_info.parquet" ]; then
+              size=$(du -h "stock_basic_info.parquet" 2>/dev/null | cut -f1)
+              echo "  ✅ stock_basic_info.parquet: $size"
+            else
+              echo "  ❌ stock_basic_info.parquet: 文件不存在"
+            fi
+
+            echo ""
+            echo "✅ 验证完成！"
+          ENDSSH
+
+      # ========================================
+      # 生成报告摘要
+      # ========================================
+      - name: 生成执行报告
+        if: always()
+        run: |
+          echo "=========================================="
+          echo "  📋 S1-S9 执行报告"
+          echo "=========================================="
+          echo "执行时间: $(date '+%Y-%m-%d %H:%M:%S')"
+          echo "执行分支: ${{ github.ref_name }}"
+          echo "触发方式: ${{ github.event_name }}"
+          echo ""
+          echo "数据目录："
+          ls -lh data/ 2>/dev/null || echo "data 目录为空"
+          echo ""
+          echo "=========================================="
+          echo "  ✅ Pipeline 执行完成"
+          echo "=========================================="

@@ -331,7 +331,10 @@ def merge_data(df_existing, df_new, stock_code, stock_info):
     5. 添加股票信息
     """
     if df_existing is None or df_existing.empty:
-        df_result = df_new
+        df_result = df_new.copy()
+        # Ensure date is datetime type
+        if not pd.api.types.is_datetime64_any_dtype(df_result['日期']):
+            df_result['日期'] = pd.to_datetime(df_result['日期'])
     elif df_new is None or df_new.empty:
         return df_existing
     else:
@@ -348,8 +351,12 @@ def merge_data(df_existing, df_new, stock_code, stock_info):
         # 排序
         df_result = df_result.sort_values('日期').reset_index(drop=True)
     
-    # 转换日期回字符串
-    df_result['日期'] = df_result['日期'].dt.strftime('%Y-%m-%d')
+    # Convert date back to string (ensure date column is datetime type)
+    if pd.api.types.is_datetime64_any_dtype(df_result['日期']):
+        df_result['日期'] = df_result['日期'].dt.strftime('%Y-%m-%d')
+    else:
+        # If not datetime type, convert first then format
+        df_result['日期'] = pd.to_datetime(df_result['日期']).dt.strftime('%Y-%m-%d')
     
     # 重新计算派生字段（确保完整性）
     df_result = calculate_derived_fields(df_result)

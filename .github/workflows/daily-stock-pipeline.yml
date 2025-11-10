@@ -1,9 +1,9 @@
-name: Daily-Stock-Data-Pipeline-S1-S9
+name: Daily-Stock-Data-Pipeline-SMART-SKIP
 
 on:
   schedule:
-    - cron: '30 8 * * 1-5'  # 北京时间 16:30（UTC+8），工作日执行
-  workflow_dispatch:  # 支持手动触发
+    - cron: '30 8 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   stock-data-pipeline:
@@ -32,94 +32,238 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
 
-      - name: 测试 SSH 连接
+      # ========================================
+      # ✨ 智能检查：判断今天是否需要更新数据
+      # ========================================
+      - name: 智能检查 - 判断是否需要更新
+        id: smart_check
         run: |
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} "echo '✅ SSH 连接成功'"
+          python3 << 'PYTHON_SCRIPT'
+          from datetime import datetime
+          import sys
+          
+          # 获取今天是星期几（0=周一, 6=周日）
+          today = datetime.now()
+          weekday = today.weekday()
+          
+          print(f"📅 今天: {today.strftime('%Y-%m-%d')} ({['周一','周二','周三','周四','周五','周六','周日'][weekday]})")
+          
+          # 判断是否是交易日
+          if weekday >= 5:  # 周六或周日
+              print("⏭️  今天是周末（非交易日），数据应该已是上周五的")
+              print("跳过所有下载步骤，避免重复下载")
+              print("skip_download=true")
+              # 设置环境变量
+              with open('$GITHUB_ENV', 'a') as f:
+                  f.write('SKIP_DOWNLOAD=true\n')
+          else:
+              print("✅ 今天是工作日，可能需要更新数据")
+              print("skip_download=false")
+              with open('$GITHUB_ENV', 'a') as f:
+                  f.write('SKIP_DOWNLOAD=false\n')
+          PYTHON_SCRIPT
+
+      - name: 显示跳过状态
+        run: |
+          echo "=========================================="
+          echo "智能跳过检查结果"
+          echo "=========================================="
+          echo "SKIP_DOWNLOAD = ${{ env.SKIP_DOWNLOAD }}"
+          
+          if [ "${{ env.SKIP_DOWNLOAD }}" = "true" ]; then
+            echo ""
+            echo "⏭️  今天是周末，数据已是最新"
+            echo "将跳过所有下载步骤"
+            echo ""
+            echo "💡 提示："
+            echo "  - 如果需要强制更新，请手动触发workflow并修改检查逻辑"
+            echo "  - 或者在工作日运行此workflow"
+          else
+            echo ""
+            echo "✅ 开始执行数据更新"
+          fi
+          echo "=========================================="
+
+      # 创建上传脚本
+      - name: 创建上传脚本
+        if: env.SKIP_DOWNLOAD != 'true'
+        run: |
+          cat > upload_data.sh << 'EOF'
+          #!/bin/bash
+          DIR_NAME=$1
+          REMOTE_PATH=$2
+          
+          if [ -d "$DIR_NAME" ] || [ -f "$DIR_NAME" ]; then
+            echo "📤 上传 $DIR_NAME..."
+            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+              "$DIR_NAME" \
+              root@${{ secrets.SERVER_IP }}:"$REMOTE_PATH"
+            echo "✅ $DIR_NAME 上传完成"
+          else
+            echo "⚠️  $DIR_NAME 不存在，跳过上传"
+          fi
+          EOF
+          chmod +x upload_data.sh
 
       # ========================================
-      # S1: 下载个股 K 线数据（不复权）
+      # S1: 下载个股 K 线数据
       # ========================================
       - name: S1 - 下载个股K线数据（增量）
+        if: env.SKIP_DOWNLOAD != 'true'
+        continue-on-error: true
+        id: step_s1
         run: |
           echo "=========================================="
           echo "  S1: 下载个股K线数据（不复权，增量）"
           echo "=========================================="
           python scripts/S1_20251103_download_kline_个股增量.py
 
+      - name: S1 - 立即上传数据
+        if: env.SKIP_DOWNLOAD != 'true' && steps.step_s1.outcome == 'success'
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/daily_kline_raw"
+          ./upload_data.sh "data/daily_kline_raw/" "/root/lightstock/data/daily_kline_raw/"
+
       # ========================================
-      # S2: 下载复权数据（前复权+后复权）
+      # S2: 下载复权数据
       # ========================================
       - name: S2 - 下载复权数据（增量）
+        if: env.SKIP_DOWNLOAD != 'true'
+        continue-on-error: true
+        id: step_s2
         run: |
           echo "=========================================="
           echo "  S2: 下载复权数据（前复权+后复权，增量）"
           echo "=========================================="
           python scripts/S2_20251103_download_adjusted_复权增量.py
 
+      - name: S2 - 立即上传数据
+        if: env.SKIP_DOWNLOAD != 'true' && steps.step_s2.outcome == 'success'
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/{daily_parquet_qfq,daily_parquet_hfq}"
+          ./upload_data.sh "data/daily_parquet_qfq/" "/root/lightstock/data/daily_parquet_qfq/"
+          ./upload_data.sh "data/daily_parquet_hfq/" "/root/lightstock/data/daily_parquet_hfq/"
+
       # ========================================
       # S3: 下载大盘指数数据
       # ========================================
       - name: S3 - 下载大盘指数数据（增量）
+        if: env.SKIP_DOWNLOAD != 'true'
+        continue-on-error: true
+        id: step_s3
         run: |
           echo "=========================================="
           echo "  S3: 下载大盘指数数据（增量）"
           echo "=========================================="
           python scripts/S3_20251103_download_index_大盘增量.py
 
+      - name: S3 - 立即上传数据
+        if: env.SKIP_DOWNLOAD != 'true' && steps.step_s3.outcome == 'success'
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/index_data"
+          ./upload_data.sh "data/index_data/" "/root/lightstock/data/index_data/"
+
       # ========================================
-      # S4: 计算技术指标（个股+大盘）
+      # S4: 计算技术指标
       # ========================================
       - name: S4 - 计算技术指标（全量）
+        if: env.SKIP_DOWNLOAD != 'true'
+        continue-on-error: true
+        id: step_s4
         run: |
           echo "=========================================="
           echo "  S4: 计算个股及大盘技术指标（全量）"
           echo "=========================================="
           python scripts/S4_20251102\ calculate_个股及大盘技术全量计算.py
 
+      - name: S4 - 立即上传数据
+        if: env.SKIP_DOWNLOAD != 'true' && steps.step_s4.outcome == 'success'
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/technical_indicators"
+          ./upload_data.sh "data/technical_indicators/" "/root/lightstock/data/technical_indicators/"
+
       # ========================================
       # S5: 生成每日技术快照
       # ========================================
       - name: S5 - 生成每日技术快照
+        if: env.SKIP_DOWNLOAD != 'true'
+        continue-on-error: true
+        id: step_s5
         run: |
           echo "=========================================="
           echo "  S5: 生成个股每日技术快照"
           echo "=========================================="
           python scripts/S5_20251103_generate_daily_个股每日技术快照.py
 
+      - name: S5 - 立即上传数据
+        if: env.SKIP_DOWNLOAD != 'true' && steps.step_s5.outcome == 'success'
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/daily_snapshot"
+          ./upload_data.sh "data/daily_snapshot/" "/root/lightstock/data/daily_snapshot/"
+
       # ========================================
-      # S6: 基础强势股筛选（CANSLIM）
+      # S6: 基础强势股筛选
       # ========================================
       - name: S6 - 基础强势股筛选
+        if: env.SKIP_DOWNLOAD != 'true'
+        continue-on-error: true
+        id: step_s6
         run: |
           echo "=========================================="
           echo "  S6: 基础强势股筛选（CANSLIM）"
           echo "=========================================="
           python scripts/S6_20251103_\ 基础强势股筛选.py
 
+      - name: S6 - 立即上传数据
+        if: env.SKIP_DOWNLOAD != 'true' && steps.step_s6.outcome == 'success'
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/canslim_screening"
+          ./upload_data.sh "data/canslim_screening/" "/root/lightstock/data/canslim_screening/"
+
       # ========================================
       # S7: 生成市场聚合数据
       # ========================================
       - name: S7 - 生成市场聚合数据
+        if: env.SKIP_DOWNLOAD != 'true'
+        continue-on-error: true
+        id: step_s7
         run: |
           echo "=========================================="
           echo "  S7: 生成市场聚合数据"
           echo "=========================================="
           python scripts/S7_20251103_generate_market市场聚合数据.py
 
+      - name: S7 - 立即上传数据
+        if: env.SKIP_DOWNLOAD != 'true' && steps.step_s7.outcome == 'success'
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/market_aggregates"
+          ./upload_data.sh "data/market_aggregates/" "/root/lightstock/data/market_aggregates/"
+
       # ========================================
       # S8: 技术指标冷热分离
       # ========================================
       - name: S8 - 技术指标冷热分离
+        if: env.SKIP_DOWNLOAD != 'true'
+        continue-on-error: true
+        id: step_s8
         run: |
           echo "=========================================="
           echo "  S8: 个股技术数据冷热分离"
           echo "=========================================="
           python scripts/S8_20251103_split_hot_cold_个股技术冷热分离.py
 
+      - name: S8 - 立即上传数据
+        if: env.SKIP_DOWNLOAD != 'true' && steps.step_s8.outcome == 'success'
+        run: |
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data/technical_indicators_hot"
+          ./upload_data.sh "data/technical_indicators_hot/" "/root/lightstock/data/technical_indicators_hot/"
+
       # ========================================
       # S9: 下载股票基本信息（周更）
       # ========================================
       - name: S9 - 下载股票基本信息（周更）
+        continue-on-error: true
+        id: step_s9
         run: |
           echo "=========================================="
           echo "  S9: 下载股票基本信息（增量，周更）"
@@ -128,149 +272,62 @@ jobs:
           if [ $(date +%u) -eq 1 ]; then
             python scripts/S9_20251102\ download_增量股票基本信息_周更.py
           else
-            echo "⏭️  今天不是周一，跳过 S9"
+            echo "⭐️  今天不是周一，跳过 S9"
           fi
 
-      # ========================================
-      # 上传数据到阿里云
-      # ========================================
-      - name: 上传 data 目录到阿里云
+      - name: S9 - 立即上传数据
+        if: steps.step_s9.outcome == 'success'
         run: |
-          echo "=========================================="
-          echo "  开始上传所有数据到阿里云"
-          echo "=========================================="
-
-          # 在阿里云服务器创建目录结构
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} 'bash -s' << 'ENDSSH'
-            mkdir -p /root/lightstock/data/{daily_kline_raw,daily_parquet_qfq,daily_parquet_hfq,index_data,technical_indicators,technical_indicators_hot,daily_snapshot,canslim_screening,market_aggregates,backups}
-          ENDSSH
-
-          # 上传各个数据目录
-          echo "📤 上传 daily_kline_raw（个股K线-不复权）..."
-          if [ -d "data/daily_kline_raw" ]; then
-            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-              data/daily_kline_raw/ \
-              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/daily_kline_raw/
-          fi
-
-          echo "📤 上传 daily_parquet_qfq（前复权数据）..."
-          if [ -d "data/daily_parquet_qfq" ]; then
-            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-              data/daily_parquet_qfq/ \
-              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/daily_parquet_qfq/
-          fi
-
-          echo "📤 上传 daily_parquet_hfq（后复权数据）..."
-          if [ -d "data/daily_parquet_hfq" ]; then
-            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-              data/daily_parquet_hfq/ \
-              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/daily_parquet_hfq/
-          fi
-
-          echo "📤 上传 index_data（大盘指数数据）..."
-          if [ -d "data/index_data" ]; then
-            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-              data/index_data/ \
-              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/index_data/
-          fi
-
-          echo "📤 上传 technical_indicators（技术指标-完整）..."
-          if [ -d "data/technical_indicators" ]; then
-            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-              data/technical_indicators/ \
-              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/technical_indicators/
-          fi
-
-          echo "📤 上传 technical_indicators_hot（技术指标-热数据）..."
-          if [ -d "data/technical_indicators_hot" ]; then
-            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-              data/technical_indicators_hot/ \
-              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/technical_indicators_hot/
-          fi
-
-          echo "📤 上传 daily_snapshot（每日快照）..."
-          if [ -d "data/daily_snapshot" ]; then
-            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-              data/daily_snapshot/ \
-              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/daily_snapshot/
-          fi
-
-          echo "📤 上传 canslim_screening（CANSLIM筛选结果）..."
-          if [ -d "data/canslim_screening" ]; then
-            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-              data/canslim_screening/ \
-              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/canslim_screening/
-          fi
-
-          echo "📤 上传 market_aggregates（市场聚合数据）..."
-          if [ -d "data/market_aggregates" ]; then
-            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-              data/market_aggregates/ \
-              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/market_aggregates/
-          fi
-
-          echo "📤 上传 stock_basic_info.parquet（股票基本信息）..."
-          if [ -f "data/stock_basic_info.parquet" ]; then
-            rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-              data/stock_basic_info.parquet \
-              root@${{ secrets.SERVER_IP }}:/root/lightstock/data/
-          fi
-
-          echo "✅ 所有数据上传完成！"
+          ssh -i ~/.ssh/id_rsa root@${{ secrets.SERVER_IP }} "mkdir -p /root/lightstock/data"
+          ./upload_data.sh "data/stock_basic_info.parquet" "/root/lightstock/data/"
 
       # ========================================
-      # 验证数据完整性
-      # ========================================
-      - name: 验证阿里云数据完整性
-        run: |
-          echo "=========================================="
-          echo "  验证阿里云服务器数据"
-          echo "=========================================="
-
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@${{ secrets.SERVER_IP }} 'bash -s' << 'ENDSSH'
-            cd /root/lightstock/data
-
-            echo "📊 数据目录统计："
-            echo ""
-
-            for dir in daily_kline_raw daily_parquet_qfq daily_parquet_hfq index_data technical_indicators technical_indicators_hot daily_snapshot canslim_screening market_aggregates; do
-              if [ -d "$dir" ]; then
-                count=$(find "$dir" -type f 2>/dev/null | wc -l)
-                size=$(du -sh "$dir" 2>/dev/null | cut -f1)
-                echo "  ✅ $dir: $count 个文件，大小 $size"
-              else
-                echo "  ❌ $dir: 目录不存在"
-              fi
-            done
-
-            echo ""
-            if [ -f "stock_basic_info.parquet" ]; then
-              size=$(du -h "stock_basic_info.parquet" 2>/dev/null | cut -f1)
-              echo "  ✅ stock_basic_info.parquet: $size"
-            else
-              echo "  ❌ stock_basic_info.parquet: 文件不存在"
-            fi
-
-            echo ""
-            echo "✅ 验证完成！"
-          ENDSSH
-
-      # ========================================
-      # 生成报告摘要
+      # 生成执行报告
       # ========================================
       - name: 生成执行报告
         if: always()
         run: |
           echo "=========================================="
-          echo "  📋 S1-S9 执行报告"
+          echo "  📋 Pipeline 执行报告"
           echo "=========================================="
           echo "执行时间: $(date '+%Y-%m-%d %H:%M:%S')"
           echo "执行分支: ${{ github.ref_name }}"
           echo "触发方式: ${{ github.event_name }}"
           echo ""
-          echo "数据目录："
-          ls -lh data/ 2>/dev/null || echo "data 目录为空"
-          echo ""
-          echo "=========================================="
-          echo "  ✅ Pipeline 执行完成"
+          
+          if [ "${{ env.SKIP_DOWNLOAD }}" = "true" ]; then
+            echo "⏭️  所有下载步骤已跳过（今天是周末）"
+            echo ""
+            echo "💡 数据状态:"
+            echo "  - 所有数据应该已是上周五的"
+            echo "  - 无需重复下载"
+            echo "  - 如需强制更新，请在工作日手动触发"
+          else
+            echo "各步骤执行状态："
+            echo "  S1 (个股K线): ${{ steps.step_s1.outcome }}"
+            echo "  S2 (复权数据): ${{ steps.step_s2.outcome }}"
+            echo "  S3 (大盘指数): ${{ steps.step_s3.outcome }}"
+            echo "  S4 (技术指标): ${{ steps.step_s4.outcome }}"
+            echo "  S5 (每日快照): ${{ steps.step_s5.outcome }}"
+            echo "  S6 (强势股筛选): ${{ steps.step_s6.outcome }}"
+            echo "  S7 (市场聚合): ${{ steps.step_s7.outcome }}"
+            echo "  S8 (冷热分离): ${{ steps.step_s8.outcome }}"
+            echo "  S9 (股票基本信息): ${{ steps.step_s9.outcome }}"
+            
+            # 统计
+            SUCCESS=0
+            FAIL=0
+            
+            for outcome in "${{ steps.step_s1.outcome }}" "${{ steps.step_s2.outcome }}" "${{ steps.step_s3.outcome }}" "${{ steps.step_s4.outcome }}" "${{ steps.step_s5.outcome }}" "${{ steps.step_s6.outcome }}" "${{ steps.step_s7.outcome }}" "${{ steps.step_s8.outcome }}" "${{ steps.step_s9.outcome }}"; do
+              if [ "$outcome" = "success" ]; then
+                SUCCESS=$((SUCCESS + 1))
+              elif [ "$outcome" = "failure" ]; then
+                FAIL=$((FAIL + 1))
+              fi
+            done
+            
+            echo ""
+            echo "✅ 成功: $SUCCESS 个步骤"
+            echo "❌ 失败: $FAIL 个步骤"
+          fi
           echo "=========================================="
